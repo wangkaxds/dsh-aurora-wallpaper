@@ -206,7 +206,9 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const m = textures.get(it.mask) || WHITE
           const f = sample(m, u0, v0)
           const flow = m.rg88 ? [f[3] / 255, f[0] / 255] : [f[0] / 255, f[1] / 255]
-          const flowMask = [(flow[0] - 0.498) * 2, (flow[1] - 0.498) * 2]
+          // 方向实验开关：WE 流向约定待确认，支持全局翻转
+          const sgn = globalThis.__WE_FLIP ? -1 : 1
+          const flowMask = [(flow[0] - 0.498) * 2 * sgn, (flow[1] - 0.498) * 2 * sgn]
           // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
           const t2 = it.speed * time
           let off = Math.sin(t2) * 0.498 + 0.5
@@ -221,7 +223,8 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const m = textures.get(it.mask) || WHITE
           const f = sample(m, u0, v0)
           const mask = m.rg88 ? f[3] / 255 : f[0] / 255
-          const dir = rotate2([0, 1], it.direction)
+          const sgn = globalThis.__WE_FLIP ? -1 : 1
+          const dir = rotate2([0, 1], it.direction * sgn)
           const pos = Math.abs((u0 - 0.5) * dir[0] + (v0 - 0.5) * dir[1])
           const dist = time * it.speed + (u0 * dir[0] + v0 * dir[1]) * (it.scale + it.perspective * pos)
           const s = Math.sin(dist) * (it.strength * it.strength + it.perspective * pos) * mask
@@ -231,8 +234,9 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const noise = textures.get('util/noise') || WHITE
           const n = sample(noise, u0 * it.noiseScale, v0 * it.noiseScale)
           const aspect = (tex.width / tex.height) * it.ratio
-          const zw = rotate2([1 / aspect, aspect], it.direction)
-          const params = rotate2([u0, v0], it.direction)
+          const sgn = globalThis.__WE_FLIP ? -1 : 1
+          const zw = rotate2([1 / aspect, aspect], it.direction * sgn)
+          const params = rotate2([u0, v0], it.direction * sgn)
           let amp = it.strength * it.strength * 0.005
           // 摆动蒙版：pass 提供了蒙版纹理即启用（WE 编辑器行为），限制摆动区域
           if (it.mask) {

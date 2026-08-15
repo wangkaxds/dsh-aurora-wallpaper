@@ -27,7 +27,8 @@ function buildFragSource() {
     } else if (ty${i} == 1) {
       vec4 f${i} = texture(u_FxMask[${i}], uv0);
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
-      vec2 flowMask${i} = (flow${i} - vec2(0.498)) * 2.0;
+      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
+      vec2 flowMask${i} = (flow${i} - vec2(0.498)) * 2.0 * fg${i};
       // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
       float t2${i} = u_FxP[${i}].x * u_Time;
       float off${i} = sin(t2${i}) * 0.498 + 0.5;
@@ -39,7 +40,8 @@ function buildFragSource() {
     } else if (ty${i} == 2) {
       vec4 f${i} = texture(u_FxMask[${i}], uv0);
       float mask${i} = u_FxRG88[${i}] > 0.5 ? f${i}.a : f${i}.r;
-      vec2 dir${i} = vec2(-sin(u_FxP[${i}].w), cos(u_FxP[${i}].w));
+      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
+      vec2 dir${i} = vec2(-sin(u_FxP[${i}].w * fg${i}), cos(u_FxP[${i}].w * fg${i}));
       float pos${i} = abs(dot(uv0 - vec2(0.5), dir${i}));
       float dist${i} = u_Time * u_FxP[${i}].x + dot(uv0, dir${i}) * u_FxP[${i}].y;
       float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z) * mask${i};
@@ -47,8 +49,9 @@ function buildFragSource() {
     } else if (ty${i} == 3) {
       vec4 n${i} = texture(u_Noise, uv0 * u_FxP[${i}].z);
       float aspect${i} = u_FbSize.x / u_FbSize.y * 0.3;
-      vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w);
-      vec2 pa${i} = rot2(uv0, u_FxP[${i}].w);
+      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
+      vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w * fg${i});
+      vec2 pa${i} = rot2(uv0, u_FxP[${i}].w * fg${i});
       float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005;
       amp${i} *= texture(u_FxMask[${i}], uv0).r;
       float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
@@ -67,7 +70,8 @@ function buildFragSource() {
   if (${i} < u_FxCount && u_FxType[${i}] == 4) {
       vec4 f${i} = texture(u_FxMask[${i}], uv0);
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
-      flow${i} = (flow${i} - vec2(0.498)) * 2.0;
+      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
+      flow${i} = (flow${i} - vec2(0.498)) * 2.0 * fg${i};
       float amount${i} = min(1.0, length(flow${i}));
       float phR${i} = smoothstep(0.2, 0.8, texture(u_Aux, uv0 * u_FxP[${i}].z).r);
       float amp${i} = u_FxP[${i}].y * 0.1;
@@ -99,6 +103,7 @@ uniform float u_FxRG88[8];
 uniform sampler2D u_Noise;
 uniform sampler2D u_Aux;
 uniform vec2 u_FbSize;
+uniform float u_Flip;
 out vec4 fragColor;
 
 float fx_frac(float x) { return x - floor(x); }
@@ -164,6 +169,7 @@ export function createRenderer(canvas) {
     noise: gl.getUniformLocation(program, 'u_Noise'),
     aux: gl.getUniformLocation(program, 'u_Aux'),
     fbSize: gl.getUniformLocation(program, 'u_FbSize'),
+    flip: gl.getUniformLocation(program, 'u_Flip'),
     aPos: gl.getAttribLocation(program, 'a_Position'),
     aUv: gl.getAttribLocation(program, 'a_TexCoord'),
   }
@@ -194,6 +200,7 @@ export function createRenderer(canvas) {
   gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
 
   function render(scene, textures, width, height, time = 0) {
+    const flip = globalThis.__WE_FLIP ? 1.0 : 0.0
     gl.viewport(0, 0, width, height)
     const general = scene.general || {}
     if (general.clearenabled !== false) {
@@ -227,6 +234,7 @@ export function createRenderer(canvas) {
       gl.uniform3f(loc.color, layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness)
       gl.uniform1f(loc.alpha, layer.alpha)
       gl.uniform1f(loc.time, time)
+      gl.uniform1f(loc.flip, flip)
       // 全局噪声（util/noise）绑定到 9 号纹理单元
       const noiseTex = textures.get('util/noise')
       gl.activeTexture(gl.TEXTURE9)

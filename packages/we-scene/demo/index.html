@@ -29,6 +29,8 @@ import { generateNoiseTexture } from '../src/render/noise.js'
 const cv = document.getElementById('cv')
 const status = document.getElementById('status')
 const renderer = createRenderer(cv)
+// 方向实验开关：URL 加 ?flip=1 翻转所有蒙版驱动位移的方向（shake/sway/waves/flow）
+if (new URLSearchParams(location.search).get('flip') === '1') globalThis.__WE_FLIP = true
 const utf8 = new TextDecoder()
 function readText(bytes) {
   return utf8.decode(bytes).replace(/^\uFEFF/, '')
