@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>we-scene 演示 · Wallpaper Engine 场景浏览器渲染</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101012; color: #ddd; font-family: system-ui, sans-serif; }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { max-width: 100vw; max-height: 100vh; width: auto; height: auto; background: #000; }
+  #bar { position: fixed; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #bar label { font-size: 13px; background: #222; padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid #444; }
+  #status { font-size: 12px; color: #99aabb; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <label>选择 scene.pkg<input id="pkg" type="file" hidden></label>
+  <label>选择 project.json（可选）<input id="proj" type="file" hidden></label>
+  <span id="status">未加载 —— 需要本地服务器：node cli/serve.mjs 后访问 http://localhost:8123/demo/</span>
+</div>
+<div id="wrap"><canvas id="cv" width="1920" height="1080"></canvas></div>
+<script type="module">
+import { parsePkg, getEntry } from '../src/pkg/container.js'
+import { parseTex, decodeMip0, FIF } from '../src/pkg/texture.js'
+import { parseScene, resolveMaterial } from '../src/scene/parse.js'
+import { createRenderer, makeTexture } from '../src/render/renderer.js'
+
+const cv = document.getElementById('cv')
+const status = document.getElementById('status')
+const renderer = createRenderer(cv)
+
+let pkg = null
+let project = null
+let scene = null
+let textures = new Map()
+let startTime = 0
+
+document.getElementById('pkg').addEventListener('change', async (ev) => {
+  if (!ev.target.files[0]) return
+  pkg = parsePkg(new Uint8Array(await ev.target.files[0].arrayBuffer()))
+  await rebuild()
+})
+document.getElementById('proj').addEventListener('change', async (ev) => {
+  if (!ev.target.files[0]) return
+  project = JSON.parse(await ev.target.files[0].text())
+  await rebuild()
+})
+
+async function rebuild() {
+  if (!pkg) return
+  status.textContent = '解析中…'
+  const sj = JSON.parse(getEntry(pkg, 'scene.json').toString('utf8').replace(/^\uFEFF/, ''))
+  scene = parseScene(sj, project)
+  textures = new Map()
+  const white = { glTex: makeTexture(renderer.gl, new Uint8Array([255, 255, 255, 255]), 1, 1), width: 1, height: 1 }
+  textures.set('util/white', white)
+  textures.set('util/noise', white)
+  let n = 0
+  for (const layer of scene.layers) {
+    if (!layer.image) continue
+    try {
+      const modelEntry = getEntry(pkg, layer.image)
+      if (!modelEntry) continue
+      const model = JSON.parse(modelEntry.toString('utf8').replace(/^\uFEFF/, ''))
+      const mat = resolveMaterial(model)
+      if (!mat) continue
+      const material = JSON.parse(getEntry(pkg, mat.materialPath).toString('utf8').replace(/^\uFEFF/, ''))
+      const pass = material.passes && material.passes[0]
+      const texName = pass && pass.textures && pass.textures[0]
+      if (!texName) continue
+      if (textures.has(texName)) { layer.textureName = texName; continue }
+      const texEntry = getEntry(pkg, 'materials/' + texName + '.tex')
+      if (!texEntry) continue
+      const tex = parseTex(texEntry)
+      const m = decodeMip0(tex)
+      if (m.png !== undefined || (m.image !== undefined && m.fif === FIF.JPEG)) {
+        const blob = new Blob([m.png || m.image], { type: m.png ? 'image/png' : 'image/jpeg' })
+        const bmp = await createImageBitmap(blob)
+        textures.set(texName, { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height })
+      } else if (m.image !== undefined) {
+        continue
+      } else {
+        textures.set(texName, { glTex: makeTexture(renderer.gl, m.rgba, m.width, m.height), width: m.width, height: m.height })
+      }
+      layer.textureName = texName
+      n++
+    } catch (e) {
+      status.textContent = '加载失败: ' + (e && e.message)
+      return
+    }
+  }
+  status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（Phase 2：静态帧 + tint/colorkey）'
+  startTime = performance.now()
+}
+
+function frame(now) {
+  if (scene) {
+    const t = (now - startTime) / 1000
+    renderer.render(scene, textures, cv.width, cv.height, t)
+  }
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>
