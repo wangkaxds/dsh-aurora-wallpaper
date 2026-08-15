@@ -21,7 +21,7 @@ export function parsePkg(buf) {
     const nameLen = dv.getUint32(p, true)
     p += 4
     if (p + nameLen + 8 > buf.length) throw new Error('入口 ' + i + ' 越界')
-    const name = ascii(buf, p, nameLen)
+    const name = decodeName(buf, p, nameLen)
     p += nameLen
     const offset = dv.getUint32(p, true)
     p += 4
@@ -62,4 +62,13 @@ function ascii(buf, start, len) {
   let s = ''
   for (let i = start; i < start + len; i++) s += String.fromCharCode(buf[i])
   return s
+}
+
+// 入口名：WE 以 UTF-8 存储（中文名场景实测）；非法 UTF-8 时回退 Latin-1 逐字节
+function decodeName(buf, start, len) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(start, start + len))
+  } catch (e) {
+    return ascii(buf, start, len)
+  }
 }

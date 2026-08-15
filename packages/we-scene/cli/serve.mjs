@@ -54,6 +54,14 @@ createServer(async (req, res) => {
       }
       return
     }
+    if (urlPath === '/we-assets/report') {
+      // 页面状态上报（诊断用）：日志输出，供服务端侧观察
+      const u = new URL(req.url, 'http://x')
+      console.log('[demo-report] ' + decodeURIComponent(u.searchParams.get('msg') || ''))
+      res.writeHead(200, { 'Content-Type': 'text/plain' })
+      res.end('ok')
+      return
+    }
     if (urlPath.startsWith('/we-assets/shaders/')) {
       // WE shader 源文件（效果/层 shader 与公共头文件）：运行时读取本机安装，不分发
       const rel = urlPath.slice('/we-assets/shaders/'.length)

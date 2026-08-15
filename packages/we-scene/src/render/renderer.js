@@ -1,9 +1,9 @@
+import { mat4Identity, mat4Multiply, mat4Ortho, mat4RotateZ, mat4Translate, mat4Scale, buildCamera } from './math.js'
+import { hlsl2glsl } from './hlsl2glsl.js'
 // WebGL2 通用 pass 管线渲染器（移植 linux-wallpaperengine 架构）：
 // 每层 copy pass → 效果链（WE shader 转译执行，FBO 乒乓）→ 合成到画布。
 // copy/合成用自写 shader；效果 pass 用转译 WE shader（MVP=单位矩阵，mul 转置无影响）。
 // 空间：层 FBO 内容正立（v-down 显示空间），与 WE 帧缓冲空间（v-up+倒置画面）数学等价（docs/WE_RENDER_CONVENTIONS.md §1）。
-import { mat4Identity, mat4Multiply, mat4Ortho, mat4RotateZ, mat4Translate, mat4Scale, buildCamera } from './math.js'
-import { hlsl2glsl } from './hlsl2glsl.js'
 
 const ALIGN = {
   center: [0.5, 0.5],
@@ -135,6 +135,7 @@ export function createRenderer(canvas, opts = {}) {
   // 效果 shader 缓存：key = shaderName + '|' + JSON.stringify(combos)
   const progCache = new Map()
   const includeCache = new Map()
+  const shaderSrcCache = new Map()
   // 解析 material 元数据：uniform 声明行注释里的 {"material":"speedx","default":1} → { speedx: { uniform, default } }
   function parseMaterialMeta(src) {
     const meta = {}
@@ -167,11 +168,17 @@ export function createRenderer(canvas, opts = {}) {
     return Number.isFinite(n) ? n : undefined
   }
   async function getEffectProgram(shaderName, combos, providedTextures) {
-    const fragSrc = (await shaderResolver('shaders/' + shaderName + '.frag')) || ''
-    const vertSrc = (await shaderResolver('shaders/' + shaderName + '.vert')) || ''
+    // shader 源与纹理 combo 按名缓存：避免每帧每 pass 重新 fetch/正则
+    let src = shaderSrcCache.get(shaderName)
+    if (src === undefined) {
+      const fragSrc = (await shaderResolver('shaders/' + shaderName + '.frag')) || ''
+      const vertSrc = (await shaderResolver('shaders/' + shaderName + '.vert')) || ''
+      src = { frag: fragSrc, vert: vertSrc, texCombos: parseTextureCombos(fragSrc) }
+      shaderSrcCache.set(shaderName, src)
+    }
     // 纹理关联 combo 并入 combos（有显式值则不覆盖）
     const effectiveCombos = { ...combos }
-    for (const tc of parseTextureCombos(fragSrc)) {
+    for (const tc of src.texCombos) {
       if (providedTextures && providedTextures[tc.slot] && effectiveCombos[tc.combo] === undefined) {
         effectiveCombos[tc.combo] = 1
       }
@@ -186,10 +193,15 @@ export function createRenderer(canvas, opts = {}) {
         missing.add(file)
         return null
       }
-      const fragGlsl = hlsl2glsl(fragSrc, 'frag', effectiveCombos, resolver)
-      const vertGlsl = hlsl2glsl(vertSrc, 'vert', effectiveCombos, resolver)
+      const fragGlsl = hlsl2glsl(src.frag, 'frag', effectiveCombos, resolver)
+      const vertGlsl = hlsl2glsl(src.vert, 'vert', effectiveCombos, resolver)
       if (missing.size === 0) {
-        const prog = linkProgram(gl, vertGlsl, fragGlsl)
+        let prog
+        try {
+          prog = linkProgram(gl, vertGlsl, fragGlsl)
+        } catch (e) {
+          throw new Error('shader=' + shaderName + ' ' + (e && e.message))
+        }
         const uni = new Map()
         const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS)
         for (let i = 0; i < n; i++) {
@@ -197,7 +209,7 @@ export function createRenderer(canvas, opts = {}) {
           const base = info.name.replace(/\[0\]$/, '')
           uni.set(base, { loc: gl.getUniformLocation(prog, info.name), type: GL_TYPES[info.type] || 'unknown' })
         }
-        const matMeta = { ...parseMaterialMeta(vertSrc), ...parseMaterialMeta(fragSrc) }
+        const matMeta = { ...parseMaterialMeta(src.vert), ...parseMaterialMeta(src.frag) }
         const entry = { prog, uni, matMeta, fragGlsl, vertGlsl }
         progCache.set(key, entry)
         return entry
@@ -233,8 +245,8 @@ export function createRenderer(canvas, opts = {}) {
       case 'vec2': gl.uniform2f(u.loc, arr[0], arr[1]); break
       case 'vec3': gl.uniform3f(u.loc, arr[0], arr[1], arr[2]); break
       case 'vec4': gl.uniform4f(u.loc, arr[0], arr[1], arr[2], arr[3]); break
-      case 'mat4': gl.uniformMatrix4fv(u.loc, false, mat4Identity()); break
-      case 'mat3': gl.uniformMatrix3fv(u.loc, false, mat3Identity()); break
+      case 'mat4': gl.uniformMatrix4fv(u.loc, false, IDENT_M4); break
+      case 'mat3': gl.uniformMatrix3fv(u.loc, false, IDENT_M3); break
       default: break
     }
   }
@@ -246,7 +258,7 @@ export function createRenderer(canvas, opts = {}) {
     setVal(uni, 'g_ModelViewProjectionMatrix', (l) => gl.uniformMatrix4fv(l, false, mvp))
     setVal(uni, 'g_ModelMatrix', (l) => gl.uniformMatrix4fv(l, false, modelM))
     setVal(uni, 'g_ViewProjectionMatrix', (l) => gl.uniformMatrix4fv(l, false, viewProjM))
-    setVal(uni, 'g_ModelViewProjectionMatrixInverse', (l) => gl.uniformMatrix4fv(l, false, mat4Identity()))
+    setVal(uni, 'g_ModelViewProjectionMatrixInverse', (l) => gl.uniformMatrix4fv(l, false, IDENT_M4))
     setVal(uni, 'g_Brightness', (l) => gl.uniform1f(l, layer.brightness))
     setVal(uni, 'g_UserAlpha', (l) => gl.uniform1f(l, layer.alpha))
     setVal(uni, 'g_Alpha', (l) => gl.uniform1f(l, layer.alpha))
@@ -292,10 +304,39 @@ export function createRenderer(canvas, opts = {}) {
   }
 
   // ---------- 绘制辅助 ----------
-  function uploadQuad(verts) {
+  // 静态 quad 单例 + 变更才上传：避免每帧每 pass 新建 Float32Array 与 bufferData
+  const PASS_QUAD = passQuadVerts()
+  const LOCAL_QUAD = localQuadVerts()
+  const layerQuadCache = new Map()
+  function layerQuad(w, h) {
+    const key = w + 'x' + h
+    let q = layerQuadCache.get(key)
+    if (q === undefined) {
+      q = layerQuadVerts(w, h)
+      layerQuadCache.set(key, q)
+    }
+    return q
+  }
+  let currentQuadKey = null
+  function uploadQuad(key, verts) {
+    if (currentQuadKey === key) return
     gl.bindBuffer(gl.ARRAY_BUFFER, vbuf)
     gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
+    currentQuadKey = key
   }
+
+  // copy/composite 程序 uniform 位置缓存（每帧查找 → 一次初始化）
+  const copyUni = {
+    mvp: gl.getUniformLocation(copyProg, 'u_MVP'),
+    tex: gl.getUniformLocation(copyProg, 'u_Tex'),
+    color: gl.getUniformLocation(copyProg, 'u_Color4'),
+  }
+  const compUni = {
+    mvp: gl.getUniformLocation(compProg, 'u_MVP'),
+    tex: gl.getUniformLocation(compProg, 'u_Tex'),
+  }
+  const IDENT_M4 = mat4Identity()
+  const IDENT_M3 = mat3Identity()
   function setBlend(mode) {
     if (mode === 'translucent') {
       gl.enable(gl.BLEND)
@@ -313,7 +354,7 @@ export function createRenderer(canvas, opts = {}) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo ? fbo.fbo : null)
     gl.viewport(0, 0, w, h)
     gl.bindVertexArray(vao)
-    uploadQuad(verts)
+    uploadQuad('draw', verts)
     const loc = gl.getUniformLocation(prog, 'u_MVP')
     gl.uniformMatrix4fv(loc, false, mvp)
     gl.drawArrays(gl.TRIANGLES, 0, 6)
@@ -330,19 +371,18 @@ export function createRenderer(canvas, opts = {}) {
     m = mat4RotateZ(m, -layer.angles[2])
     m = mat4Scale(m, w, h, 1)
     const mvp = mat4Multiply(viewProj, m)
+    const uni = prog === compProg ? compUni : copyUni
     gl.useProgram(prog)
     setBlend('translucent')
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     gl.viewport(0, 0, width, height)
     gl.bindVertexArray(vao)
-    uploadQuad(localQuadVerts())
+    uploadQuad('local', LOCAL_QUAD)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, inputTex)
-    gl.uniform1i(gl.getUniformLocation(prog, 'u_Tex'), 0)
-    const locM = gl.getUniformLocation(prog, 'u_MVP')
-    gl.uniformMatrix4fv(locM, false, mvp)
-    const locC = gl.getUniformLocation(prog, 'u_Color4')
-    if (locC !== null) gl.uniform4f(locC, color4[0], color4[1], color4[2], color4[3])
+    gl.uniform1i(uni.tex, 0)
+    gl.uniformMatrix4fv(uni.mvp, false, mvp)
+    if (uni.color !== null && uni.color !== undefined) gl.uniform4f(uni.color, color4[0], color4[1], color4[2], color4[3])
     gl.drawArrays(gl.TRIANGLES, 0, 6)
   }
 
@@ -351,7 +391,7 @@ export function createRenderer(canvas, opts = {}) {
     gl.viewport(0, 0, width, height)
     const general = scene.general || {}
     if (general.clearenabled !== false) {
-      const cc = parseVec3(general.clearcolor || '0 0 0')
+      const cc = parseVec3Local(general.clearcolor || '0 0 0')
       gl.clearColor(cc[0], cc[1], cc[2], 1)
     } else {
       gl.clearColor(0, 0, 0, 1)
@@ -384,17 +424,18 @@ export function createRenderer(canvas, opts = {}) {
     // copy pass → FBO A（乒乓 A/B 必须独立实例）
     const fboA = getFBO(w, h, 'ping')
     const fboB = getFBO(w, h, 'pong')
+    const layerOrtho = mat4Ortho(0, w, 0, h, -10000, 10000)
     gl.useProgram(copyProg)
     setBlend('normal')
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboA.fbo)
     gl.viewport(0, 0, w, h)
     gl.bindVertexArray(vao)
-    uploadQuad(layerQuadVerts(w, h))
+    uploadQuad('layer' + w + 'x' + h, layerQuad(w, h))
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, srcTex)
-    gl.uniform1i(gl.getUniformLocation(copyProg, 'u_Tex'), 0)
-    gl.uniform4f(gl.getUniformLocation(copyProg, 'u_Color4'), color4[0], color4[1], color4[2], color4[3])
-    gl.uniformMatrix4fv(gl.getUniformLocation(copyProg, 'u_MVP'), false, mat4Ortho(0, w, 0, h, -10000, 10000))
+    gl.uniform1i(copyUni.tex, 0)
+    gl.uniform4f(copyUni.color, color4[0], color4[1], color4[2], color4[3])
+    gl.uniformMatrix4fv(copyUni.mvp, false, layerOrtho)
     gl.drawArrays(gl.TRIANGLES, 0, 6)
 
     // 效果链
@@ -450,7 +491,7 @@ export function createRenderer(canvas, opts = {}) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, outFBO.fbo)
       gl.viewport(0, 0, outFBO.width, outFBO.height)
       gl.bindVertexArray(vao)
-      uploadQuad(passQuadVerts())
+      uploadQuad('pass', PASS_QUAD)
       // 纹理绑定
       const texNames = mp.textures || []
       const maxTex = Math.max(texNames.length, 8)
@@ -479,7 +520,7 @@ export function createRenderer(canvas, opts = {}) {
         resolutions.set(ti, [t.width, t.height, t.width, t.height])
       }
       // 系统 uniform
-      bindSystemUniforms(uni, layer, time, cam.projW, cam.projH, mat4Identity(), mat4Ortho(0, w, 0, h, -10000, 10000), mat4Identity(), resolutions)
+      bindSystemUniforms(uni, layer, time, cam.projW, cam.projH, IDENT_M4, layerOrtho, IDENT_M4, resolutions)
       // 常量（material 名 → uniform 映射）
       bindConstants(uni, { ...(mp.constants || {}), ...((ov && ov.constantshadervalues) || {}) }, progEntry.matMeta)
       gl.drawArrays(gl.TRIANGLES, 0, 6)
@@ -523,7 +564,7 @@ function compile(gl, type, src) {
   return s
 }
 
-function parseVec3(s) {
+function parseVec3Local(s) {
   const p = String(s).trim().split(/\s+/).map(Number)
   return [p[0] || 0, p[1] || 0, p[2] || 0]
 }

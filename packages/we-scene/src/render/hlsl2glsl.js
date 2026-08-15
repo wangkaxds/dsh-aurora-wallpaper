@@ -406,11 +406,20 @@ export function hlsl2glsl(src, stage, combos, includeResolver) {
   })
 
   // HLSL 隐式 int→float 转换：乘除两侧的整数字面量补 .0（WE 效果 shader 中此类仅出现在 float 上下文）
-  code = code.replace(/(^|[^\d.])(\d+)\s*([*/])\s*([A-Za-z_][A-Za-z0-9_]*)/g, '$1$2.0 $3 $4')
+  // 左侧字面量需排除标识符尾部数字（如 diffx1 * diffy2 不得改写成 diffx1.0）
+  code = code.replace(/(^|[^\w.])(\d+)\s*([*/])\s*([A-Za-z_][A-Za-z0-9_]*)/g, '$1$2.0 $3 $4')
   code = code.replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s*([*/])\s*(\d+)(?![\d.])/g, '$1 $2 $3.0')
   // 字面量 × 字面量（如 3.14159 * 2）
   code = code.replace(/(\d+\.\d+)\s*([*/])\s*(\d+)(?![\d.])/g, '$1 $2 $3.0')
-  code = code.replace(/(^|[^\d.])(\d+)\s*([*/])\s*(\d+\.\d+)/g, '$1$2.0 $3 $4')
+  code = code.replace(/(^|[^\w.])(\d+)\s*([*/])\s*(\d+\.\d+)/g, '$1$2.0 $3 $4')
+
+  // + / - 的隐式 int→float（GLSL 无此隐式转换，WE HLSL 有）：
+  // 仅当可证明浮点上下文时转换——左侧为浮点字面量（2.0 - 1）或 swizzle 表达式（x.xyz - 1），
+  // 以及左侧整数字面量、右侧为浮点字面量或 swizzle 表达式（1 + 2.0 / 1 + x.xyz）。
+  code = code.replace(/(\.\d+)\s*([+-])\s*(\d+)(?![\d.])/g, '$1 $2 $3.0')
+  code = code.replace(/([A-Za-z_]\w*\.(?:xyzw|xyz|xy|zw|rgba|rgb|rg|x|y|z|w|r|g|b|a))\s*([+-])\s*(\d+)(?![\d.])/g, '$1 $2 $3.0')
+  code = code.replace(/(^|[^\w.])(\d+)\s*([+-])\s*(\d+\.\d+)/g, '$1$2.0 $3 $4')
+  code = code.replace(/(^|[^\w.])(\d+)\s*([+-])\s*([A-Za-z_]\w*\.(?:xyzw|xyz|xy|zw|rgba|rgb|rg|x|y|z|w|r|g|b|a))/g, '$1$2.0 $3 $4')
 
   // mul(a, b)：HLSL 行向量语义
   // 收集矩阵类型 uniform/局部变量名
@@ -443,10 +452,13 @@ export function hlsl2glsl(src, stage, combos, includeResolver) {
   code = code.replace(/\[(?:unroll|loop|branch|flatten)\]\s*/g, '')
   code = code.replace(/\bstatic\s+/g, '')
 
-  // 输出
+  // 输出：float 精度统一 highp（顶点默认即 highp；片元若用 mediump 会与顶点共享 uniform 精度不一致导致链接失败）
   let prologue = '#version 300 es\n'
+  if (stage === 'vert') {
+    prologue += 'precision highp float;\n'
+  }
   if (stage === 'frag') {
-    prologue += 'precision mediump float;\n'
+    prologue += 'precision highp float;\n'
     if (/\bgl_FragColor\b/.test(code)) {
       prologue += 'out vec4 fragColor;\n'
       code = code.replace(/\bgl_FragColor\b/g, 'fragColor')

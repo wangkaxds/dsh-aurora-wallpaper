@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>WebGL 环境诊断</title>
+<style>
+  body { margin: 0; background: #101014; color: #eee; font-family: system-ui, sans-serif; padding: 24px; }
+  .row { margin: 8px 0; font-size: 15px; }
+  .key { color: #8ab; }
+  .warn { color: #f66; font-weight: 600; }
+  .ok { color: #6f6; }
+  canvas { border: 1px solid #333; display: block; margin-top: 12px; }
+  #fps { font-size: 22px; color: #7fd1ff; }
+</style>
+</head>
+<body>
+<div class="row" id="gpu"></div>
+<div class="row" id="gl2"></div>
+<div class="row" id="fps">— fps</div>
+<div class="row" id="verdict"></div>
+<canvas id="cv" width="640" height="360"></canvas>
+<script type="module">
+const el = (id) => document.getElementById(id)
+const gpuRow = el('gpu')
+const gl2Row = el('gl2')
+const verdict = el('verdict')
+
+function probe() {
+  const c = document.createElement('canvas')
+  const gl = c.getContext('webgl2') || c.getContext('webgl')
+  if (!gl) {
+    gl2Row.innerHTML = '<span class="key">WebGL2</span>: <span class="warn">不可用</span>'
+    verdict.innerHTML = '<span class="warn">浏览器无法创建 WebGL 上下文（可能是硬件加速被关闭或显卡被浏览器禁用）</span>'
+    return null
+  }
+  gl2Row.innerHTML = '<span class="key">WebGL2</span>: <span class="ok">可用</span>'
+  let renderer = '未知'
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    if (ext) renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+  } catch (e) {}
+  const isCPU = /swiftshader|llvmpipe|software|basic render/i.test(renderer)
+  gpuRow.innerHTML = '<span class="key">WebGL 渲染器</span>: ' + renderer +
+    (isCPU ? ' <span class="warn">⚠ 这是 CPU 软件渲染（SwiftShader），不是你的显卡！</span>' : ' <span class="ok">（真显卡）</span>')
+  if (isCPU) {
+    verdict.innerHTML = '<span class="warn">问题找到了：浏览器在用 CPU 渲染 WebGL，所以场景卡死、CPU 满载。' +
+      '修复：浏览器设置 → 系统 → 开启"使用硬件加速"；或 chrome://flags 里 ANGLE 后端改为 D3D11；' +
+      '显卡驱动异常时还需更新驱动。弄好后重启浏览器再看。</span>'
+  } else {
+    verdict.innerHTML = '<span class="ok">WebGL 走显卡。如果场景仍卡，问题在渲染管线（把状态栏和 fps 数字发我）。</span>'
+  }
+  return renderer
+}
+
+const renderer = probe()
+const cv = el('cv')
+const gl = cv.getContext('webgl2')
+if (gl) {
+  const vs = gl.createShader(gl.VERTEX_SHADER)
+  gl.shaderSource(vs, `#version 300 es
+in vec2 p;
+void main(){ gl_Position = vec4(p, 0.0, 1.0); }`)
+  gl.compileShader(vs)
+  const fs = gl.createShader(gl.FRAGMENT_SHADER)
+  gl.shaderSource(fs, `#version 300 es
+precision highp float;
+out vec4 c;
+uniform float t;
+void main(){ c = vec4(0.5 + 0.5*sin(t), 0.5 + 0.5*sin(t+2.1), 0.5 + 0.5*sin(t+4.2), 1.0); }`)
+  gl.compileShader(fs)
+  const prog = gl.createProgram()
+  gl.attachShader(prog, vs)
+  gl.attachShader(prog, fs)
+  gl.linkProgram(prog)
+  gl.useProgram(prog)
+  const buf = gl.createBuffer()
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
+  const loc = gl.getAttribLocation(prog, 'p')
+  gl.enableVertexAttribArray(loc)
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
+  const tu = gl.getUniformLocation(prog, 't')
+  let frames = 0
+  let t0 = performance.now()
+  let rendererName = '未知'
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    if (ext) rendererName = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+  } catch (e) {}
+  setInterval(() => {
+    fetch('/we-assets/report?msg=' + encodeURIComponent(JSON.stringify({
+      v: 'diag1',
+      renderer: rendererName,
+      fpsLabel: el('fps').textContent,
+      ua: navigator.userAgent.slice(0, 120),
+    })), { cache: 'no-store' }).catch(() => {})
+  }, 2000)
+  function tick(now) {
+    gl.clearColor(0.06, 0.06, 0.08, 1)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.uniform1f(tu, now / 1000)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    frames++
+    if (now - t0 >= 1000) {
+      el('fps').textContent = frames.toFixed(0) + ' fps（全屏纯色三角形，应接近显示器刷新率）'
+      frames = 0
+      t0 = now
+    }
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+</script>
+</body>
+</html>

@@ -21,10 +21,10 @@ export const FIF = { UNKNOWN: -1, JPEG: 2, PNG: 13, GIF: 25, WEBP: 35, MP4: 35 }
 
 export function parseTex(buf) {
   let p = 0
-  const magic1 = ascii(buf, p, 9)
+  const magic1 = asciiTex(buf, p, 9)
   p += 9
   if (magic1 !== 'TEXV0005\0') throw new Error('不是 .tex 文件: ' + magic1)
-  const magic2 = ascii(buf, p, 9)
+  const magic2 = asciiTex(buf, p, 9)
   p += 9
   if (magic2 !== 'TEXI0001\0') throw new Error('未知 TEXI 子容器: ' + magic2)
 
@@ -42,7 +42,7 @@ export function parseTex(buf) {
   p += 4
   p += 4 // ignored（实测 0xFF000000，编辑器用途）
 
-  const containerMagic = ascii(buf, p, 9)
+  const containerMagic = asciiTex(buf, p, 9)
   p += 9
   const imageCount = u32(buf, p)
   p += 4
@@ -429,7 +429,7 @@ function i32(buf, p) {
   return u32(buf, p) | 0
 }
 
-function ascii(buf, start, len) {
+function asciiTex(buf, start, len) {
   let s = ''
   for (let i = start; i < start + len; i++) s += String.fromCharCode(buf[i])
   return s

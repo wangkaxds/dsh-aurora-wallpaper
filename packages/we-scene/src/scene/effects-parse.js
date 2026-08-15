@@ -1,6 +1,6 @@
+import { getEntry } from '../pkg/container.js'
 // 解析效果的 material 链：effects/<name>/effect.json → materials/effects/*.json 的 passes
 // 产出 layer.effects[i] 的 { materialPasses, fbos, binds }，供通用 pass 管线使用。
-import { getEntry } from '../pkg/container.js'
 
 // pkg: parsePkg 结果；effect: scene.json 的效果条目（file/passes/visible）
 export function resolveEffectChain(pkg, effect, readText) {

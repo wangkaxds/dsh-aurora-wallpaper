@@ -17,6 +17,7 @@
   <label>选择 scene.pkg<input id="pkg" type="file" hidden></label>
   <label>选择 project.json（可选）<input id="proj" type="file" hidden></label>
   <span id="status">未加载 —— 需要本地服务器：node cli/serve.mjs 后访问 http://localhost:8123/demo/</span>
+  <span id="fps" style="font-size:13px;color:#7fd1ff;font-variant-numeric:tabular-nums">— fps</span>
 </div>
 <div id="wrap"><canvas id="cv" width="1920" height="1080"></canvas></div>
 <script type="module">
@@ -185,21 +186,106 @@ async function rebuild() {
 }
 
 let renderErrorShown = false
+let renderBusy = false
+let renderBusyAt = 0
+let renderStallWarned = false
+let renderDoneFrames = 0 // 实际完成渲染的帧数（render promise 落定）
+let lastFrameMs = 0 // 最近完成帧的渲染耗时
+let lastT = 0 // 最近一次渲染传入的时间参数
+let lastCenterPx = null // 渲染后读回的画面中心像素（检测画面是否随时间变化）
+
+// URL ?id=<workshop文件夹id> → 自动加载该场景（如 /demo/?id=3203778110）
+{
+  const autoId = new URLSearchParams(location.search).get('id')
+  if (autoId && /^\d+$/.test(autoId)) {
+    status.textContent = '自动加载场景 ' + autoId + ' …'
+    fetch('/pkg/' + autoId, { cache: 'no-store' }).then((r) => {
+      if (!r.ok) throw new Error('pkg ' + r.status)
+      return r.arrayBuffer()
+    }).then((buf) => {
+      pkg = parsePkg(new Uint8Array(buf))
+      return rebuild()
+    }).catch((e) => {
+      status.textContent = '❌ 自动加载失败：' + (e && e.message) + '（可手动选择 scene.pkg）'
+      console.error(e)
+    })
+  }
+}
 function frame(now) {
   // 录制工具冻结开关：__weFreeze=true 时 RAF 不渲染（录制脚本自行控制帧）
   if (scene && !window.__weFreeze) {
     const t = (now - startTime) / 1000
-    renderer.render(scene, textures, cv.width, cv.height, t).catch((e) => {
-      if (!renderErrorShown) {
-        renderErrorShown = true
-        status.textContent = '❌ 渲染失败：' + (e && e.message) + '（控制台 F12 有详情）'
-        console.error(e)
-      }
-    })
+    // 忙碌保护：上一帧未完成则跳过本帧（丢帧而非堆积，防止卡顿螺旋）
+    if (!renderBusy) {
+      renderBusy = true
+      renderBusyAt = now
+      renderer.render(scene, textures, cv.width, cv.height, t).then(() => {
+        lastFrameMs = performance.now() - now
+        lastT = t
+        renderDoneFrames++
+        // 每 30 帧读一次画面中心像素（检测画面是否随时间变化）
+        if (renderDoneFrames % 30 === 0) {
+          try {
+            const px = new Uint8Array(4)
+            renderer.gl.readPixels(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, px)
+            lastCenterPx = Array.from(px)
+          } catch (e) { lastCenterPx = null }
+        }
+        renderBusy = false
+      }).catch((e) => {
+        renderBusy = false
+        if (!renderErrorShown) {
+          renderErrorShown = true
+          status.textContent = '❌ 渲染失败：' + (e && e.message) + '（控制台 F12 有详情）'
+          console.error(e)
+        }
+      })
+    } else if (now - renderBusyAt > 3000 && !renderStallWarned) {
+      // 单帧超过 3 秒：只警告不重启（重启会造成并发渲染雪崩，画面停摆）
+      renderStallWarned = true
+      status.textContent = '⚠ 单帧渲染超过 3 秒（GPU 负载高），继续等待该帧完成'
+      console.error('单帧渲染超过 3 秒')
+    }
   }
   requestAnimationFrame(frame)
 }
 requestAnimationFrame(frame)
+
+// 实时帧率显示：渲染完成帧率（真实吞吐）与 rAF 回调频率分开显示
+let fpsFrames = 0
+let fpsRenderPrev = 0
+let fpsWindow = performance.now()
+function fpsTick(now) {
+  fpsFrames++
+  const el = document.getElementById('fps')
+  if (el && now - fpsWindow >= 500) {
+    const rafFps = fpsFrames * 1000 / (now - fpsWindow)
+    const renderFps = (renderDoneFrames - fpsRenderPrev) * 1000 / (now - fpsWindow)
+    fpsRenderPrev = renderDoneFrames
+    el.textContent = '渲染 ' + renderFps.toFixed(1) + ' fps（帧耗时 ' + lastFrameMs.toFixed(0) + ' ms）/ rAF ' + rafFps.toFixed(1) + (renderBusy ? ' (busy)' : '')
+    fpsFrames = 0
+    fpsWindow = now
+  }
+  requestAnimationFrame(fpsTick)
+}
+requestAnimationFrame(fpsTick)
+
+// 状态上报（每 2 秒发到服务端日志，供诊断）
+const DEMO_VERSION = 'v11-noubo-default'
+setInterval(() => {
+  const msg = JSON.stringify({
+    v: DEMO_VERSION,
+    busy: renderBusy,
+    done: renderDoneFrames,
+    lastMs: Math.round(lastFrameMs),
+    t: Math.round(lastT * 100) / 100,
+    centerPx: lastCenterPx,
+    status: (status.textContent || '').slice(0, 80),
+    fps: document.getElementById('fps').textContent,
+    hasScene: !!scene,
+  })
+  fetch('/we-assets/report?msg=' + encodeURIComponent(msg), { cache: 'no-store' }).catch(() => {})
+}, 2000)
 </script>
 </body>
 </html>
