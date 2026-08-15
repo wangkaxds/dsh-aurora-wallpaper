@@ -43,8 +43,8 @@ export function renderScene(scene, textures, width, height, time = 0) {
     })
     const uvs = [[0, 0], [1, 0], [1, 1], [0, 1]]
     const fx = effectChain(layer)
-    drawTri(rgba, width, height, corners[0], corners[1], corners[2], uvs[0], uvs[1], uvs[2], tex, fx, layer)
-    drawTri(rgba, width, height, corners[0], corners[2], corners[3], uvs[0], uvs[2], uvs[3], tex, fx, layer)
+    drawTri(rgba, width, height, corners[0], corners[1], corners[2], uvs[0], uvs[1], uvs[2], tex, fx, layer, time)
+    drawTri(rgba, width, height, corners[0], corners[2], corners[3], uvs[0], uvs[2], uvs[3], tex, fx, layer, time)
     drawn++
   }
   return { rgba, width, height, drawn }
@@ -64,15 +64,22 @@ function layerMatrix(layer) {
   return m
 }
 
-// Phase 2 效果链：tint（mix 混合）+ colorkey（距离键控），按 scene.json 列出顺序执行
+// Phase 2/3 效果链：scroll（uv 循环位移）+ tint（mix 混合）+ colorkey（距离键控），按 scene.json 列出顺序执行
 function effectChain(layer) {
   const tints = []
   const keys = []
+  const scrolls = []
   for (const e of layer.effects || []) {
     if (!e.visible) continue
     const pass = e.passes && e.passes[0]
     const c = pass ? pass.constantshadervalues : {}
-    if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
+    if (e.file.endsWith('scroll/effect.json')) {
+      const sx = typeof c.speedx === 'number' ? c.speedx : 0
+      const sy = typeof c.speedy === 'number' ? c.speedy : 0
+      const rx = c.repeat !== undefined ? (typeof c.repeat === 'string' ? vec2(c.repeat)[0] : 1) : 1
+      const ry = c.repeat !== undefined ? (typeof c.repeat === 'string' ? vec2(c.repeat)[1] : 1) : 1
+      scrolls.push({ sx, sy, rx, ry })
+    } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tints.push({ color: vec3(typeof c.color === 'string' ? c.color : c.color.value), alpha: typeof c.alpha === 'number' ? c.alpha : 1 })
     } else if (e.file.endsWith('colorkey/effect.json') && c.color !== undefined) {
       keys.push({
@@ -82,7 +89,7 @@ function effectChain(layer) {
       })
     }
   }
-  return { tints, keys }
+  return { tints, keys, scrolls }
 }
 
 function sample(tex, u, v) {
@@ -96,7 +103,7 @@ function sample(tex, u, v) {
   return [tex.rgba[o], tex.rgba[o + 1], tex.rgba[o + 2], tex.rgba[o + 3]]
 }
 
-function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer) {
+function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time) {
   const x0 = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0])))
   const x1 = Math.min(W - 1, Math.ceil(Math.max(a[0], b[0], c[0])))
   const y0 = Math.max(0, Math.floor(Math.min(a[1], b[1], c[1])))
@@ -115,8 +122,17 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer) {
       const w1 = edge(c, a, [px, py]) * ia
       const w2 = edge(a, b, [px, py]) * ia
       if (w0 < 0 || w1 < 0 || w2 < 0) continue
-      const u = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0]
-      const v = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1]
+      const u0 = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0]
+      const v0 = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1]
+      // scroll 效果：uv' = frac((uv + sign(s)*s²*t) * repeat)，按效果链顺序
+      let u = u0
+      let v = v0
+      for (const sc of fx.scrolls) {
+        const ox = Math.sign(sc.sx) * sc.sx * sc.sx * time
+        const oy = Math.sign(sc.sy) * sc.sy * sc.sy * time
+        u = frac((u + ox) * sc.rx)
+        v = frac((v + oy) * sc.ry)
+      }
       const t = sample(tex, u, v)
       let r = t[0] / 255 * layer.color[0] * layer.brightness
       let g = t[1] / 255 * layer.color[1] * layer.brightness
@@ -156,7 +172,16 @@ function mix(a, b, t) {
   return a * (1 - t) + b * t
 }
 
+function frac(x) {
+  return x - Math.floor(x)
+}
+
 function vec3(s) {
   const p = String(s).trim().split(/\s+/).map(Number)
   return [p[0] || 0, p[1] || 0, p[2] || 0]
+}
+
+function vec2(s) {
+  const p = String(s).trim().split(/\s+/).map(Number)
+  return [p[0] || 0, p[1] || 0]
 }

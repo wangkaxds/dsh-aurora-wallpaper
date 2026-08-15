@@ -23,9 +23,12 @@ uniform float u_TintAlpha;
 uniform vec3 u_Key;
 uniform float u_KeyFuzz;
 uniform float u_KeyTol;
+uniform vec2 u_Scroll;
+uniform vec2 u_Repeat;
 out vec4 fragColor;
 void main() {
-  vec4 t = texture(u_Tex, v_UV);
+  vec2 uv = fract((v_UV + u_Scroll) * u_Repeat);
+  vec4 t = texture(u_Tex, uv);
   vec3 rgb = t.rgb * u_Color;
   float a = t.a * u_Alpha;
   rgb = mix(rgb, u_Tint, u_TintAlpha);
@@ -62,6 +65,8 @@ export function createRenderer(canvas) {
     key: gl.getUniformLocation(program, 'u_Key'),
     keyFuzz: gl.getUniformLocation(program, 'u_KeyFuzz'),
     keyTol: gl.getUniformLocation(program, 'u_KeyTol'),
+    scroll: gl.getUniformLocation(program, 'u_Scroll'),
+    repeat: gl.getUniformLocation(program, 'u_Repeat'),
     aPos: gl.getAttribLocation(program, 'a_Position'),
     aUv: gl.getAttribLocation(program, 'a_TexCoord'),
   }
@@ -122,12 +127,14 @@ export function createRenderer(canvas) {
       gl.bindTexture(gl.TEXTURE_2D, tex)
       gl.uniform3f(loc.color, layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness)
       gl.uniform1f(loc.alpha, layer.alpha)
-      const fx = effectUniforms(layer)
+      const fx = effectUniforms(layer, time)
       gl.uniform3f(loc.tint, fx.tint[0], fx.tint[1], fx.tint[2])
       gl.uniform1f(loc.tintAlpha, fx.tintAlpha)
       gl.uniform3f(loc.key, fx.key[0], fx.key[1], fx.key[2])
       gl.uniform1f(loc.keyFuzz, fx.fuzz)
       gl.uniform1f(loc.keyTol, fx.tol)
+      gl.uniform2f(loc.scroll, fx.scroll[0], fx.scroll[1])
+      gl.uniform2f(loc.repeat, fx.repeat[0], fx.repeat[1])
       gl.drawArrays(gl.TRIANGLES, 0, 6)
       drawn++
     }
@@ -153,17 +160,24 @@ export function makeTexture(gl, rgba, width, height, bitmap = null) {
   return tex
 }
 
-function effectUniforms(layer) {
+function effectUniforms(layer, time) {
   let tint = [0, 0, 0]
   let tintAlpha = 0
   let key = [0, 0, 0]
   let fuzz = 0
   let tol = -100
+  let scroll = [0, 0]
+  let repeat = [1, 1]
   for (const e of layer.effects || []) {
     if (!e.visible) continue
     const pass = e.passes && e.passes[0]
     const c = pass ? pass.constantshadervalues : {}
-    if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
+    if (e.file.endsWith('scroll/effect.json')) {
+      const sx = typeof c.speedx === 'number' ? c.speedx : 0
+      const sy = typeof c.speedy === 'number' ? c.speedy : 0
+      scroll = [Math.sign(sx) * sx * sx * time, Math.sign(sy) * sy * sy * time]
+      if (c.repeat !== undefined) repeat = vec2(c.repeat)
+    } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tint = vec3(typeof c.color === 'string' ? c.color : c.color.value)
       tintAlpha = typeof c.alpha === 'number' ? c.alpha : 1
     } else if (e.file.endsWith('colorkey/effect.json') && c.color !== undefined) {
@@ -172,7 +186,7 @@ function effectUniforms(layer) {
       tol = typeof c.tolerance === 'number' ? c.tolerance : 0.1
     }
   }
-  return { tint, tintAlpha, key, fuzz, tol }
+  return { tint, tintAlpha, key, fuzz, tol, scroll, repeat }
 }
 
 function linkProgram(gl, vsSrc, fsSrc) {
@@ -201,4 +215,9 @@ function compile(gl, type, src) {
 function vec3(s) {
   const p = String(s).trim().split(/\s+/).map(Number)
   return [p[0] || 0, p[1] || 0, p[2] || 0]
+}
+
+function vec2(s) {
+  const p = String(s).trim().split(/\s+/).map(Number)
+  return [p[0] || 0, p[1] || 0]
 }
