@@ -19,8 +19,14 @@ const mime = {
 
 createServer(async (req, res) => {
   try {
-    const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname)
-    const rel = urlPath.replace(/^\/+/, '') || 'demo/index.html'
+    let urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname)
+    if (urlPath === '/') {
+      res.writeHead(302, { Location: '/demo/' })
+      res.end()
+      return
+    }
+    let rel = urlPath.replace(/^\/+/, '') || 'demo/index.html'
+    if (rel.endsWith('/')) rel += 'index.html'
     const file = join(root, rel)
     if (!file.startsWith(root)) {
       res.writeHead(403)

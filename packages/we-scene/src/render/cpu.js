@@ -43,8 +43,8 @@ export function renderScene(scene, textures, width, height, time = 0) {
     })
     const uvs = [[0, 0], [1, 0], [1, 1], [0, 1]]
     const fx = effectChain(layer)
-    drawTri(rgba, width, height, corners[0], corners[1], corners[2], uvs[0], uvs[1], uvs[2], tex, fx, layer, time)
-    drawTri(rgba, width, height, corners[0], corners[2], corners[3], uvs[0], uvs[2], uvs[3], tex, fx, layer, time)
+    drawTri(rgba, width, height, corners[0], corners[1], corners[2], uvs[0], uvs[1], uvs[2], tex, fx, layer, time, textures)
+    drawTri(rgba, width, height, corners[0], corners[2], corners[3], uvs[0], uvs[2], uvs[3], tex, fx, layer, time, textures)
     drawn++
   }
   return { rgba, width, height, drawn }
@@ -64,21 +64,42 @@ function layerMatrix(layer) {
   return m
 }
 
-// Phase 2/3 效果链：scroll（uv 循环位移）+ tint（mix 混合）+ colorkey（距离键控），按 scene.json 列出顺序执行
+// Phase 3 效果链（按 scene.json 列出顺序）：
+// 位移类：scroll / shake / waterwaves（修改采样 uv）；颜色类：tint / colorkey（作用于采样后的颜色）
 function effectChain(layer) {
+  const items = []
   const tints = []
   const keys = []
-  const scrolls = []
   for (const e of layer.effects || []) {
     if (!e.visible) continue
     const pass = e.passes && e.passes[0]
     const c = pass ? pass.constantshadervalues : {}
+    const combos = pass ? pass.combos : {}
     if (e.file.endsWith('scroll/effect.json')) {
       const sx = typeof c.speedx === 'number' ? c.speedx : 0
       const sy = typeof c.speedy === 'number' ? c.speedy : 0
-      const rx = c.repeat !== undefined ? (typeof c.repeat === 'string' ? vec2(c.repeat)[0] : 1) : 1
-      const ry = c.repeat !== undefined ? (typeof c.repeat === 'string' ? vec2(c.repeat)[1] : 1) : 1
-      scrolls.push({ sx, sy, rx, ry })
+      const repeat = c.repeat !== undefined ? vec2(c.repeat) : [1, 1]
+      items.push({ type: 'scroll', sx, sy, rx: repeat[0], ry: repeat[1] })
+    } else if (e.file.endsWith('shake/effect.json')) {
+      items.push({
+        type: 'shake',
+        mask: pass && pass.textures && pass.textures[1],
+        speed: typeof c.speed === 'number' ? c.speed : 1,
+        amp: typeof c.strength === 'number' ? c.strength : 0.1,
+        friction: c.friction !== undefined ? vec2(c.friction) : [1, 1],
+        bounds: c.bounds !== undefined ? vec2(c.bounds) : [0, 1],
+        direction: combos.DIRECTION || 0,
+      })
+    } else if (e.file.endsWith('waterwaves/effect.json')) {
+      items.push({
+        type: 'waves',
+        mask: pass && pass.textures && pass.textures[1],
+        speed: typeof c.speed === 'number' ? c.speed : 5,
+        scale: typeof c.scale === 'number' ? c.scale : 200,
+        strength: typeof c.strength === 'number' ? c.strength : 0.1,
+        direction: typeof c.direction === 'number' ? c.direction : 0,
+        perspective: typeof c.perspective === 'number' ? c.perspective : 0,
+      })
     } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tints.push({ color: vec3(typeof c.color === 'string' ? c.color : c.color.value), alpha: typeof c.alpha === 'number' ? c.alpha : 1 })
     } else if (e.file.endsWith('colorkey/effect.json') && c.color !== undefined) {
@@ -89,7 +110,7 @@ function effectChain(layer) {
       })
     }
   }
-  return { tints, keys, scrolls }
+  return { items, tints, keys }
 }
 
 function sample(tex, u, v) {
@@ -103,7 +124,7 @@ function sample(tex, u, v) {
   return [tex.rgba[o], tex.rgba[o + 1], tex.rgba[o + 2], tex.rgba[o + 3]]
 }
 
-function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time) {
+function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textures) {
   const x0 = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0])))
   const x1 = Math.min(W - 1, Math.ceil(Math.max(a[0], b[0], c[0])))
   const y0 = Math.max(0, Math.floor(Math.min(a[1], b[1], c[1])))
@@ -124,14 +145,41 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time) {
       if (w0 < 0 || w1 < 0 || w2 < 0) continue
       const u0 = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0]
       const v0 = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1]
-      // scroll 效果：uv' = frac((uv + sign(s)*s²*t) * repeat)，按效果链顺序
+      // 位移类效果：按效果链顺序逐级修改采样 uv
       let u = u0
       let v = v0
-      for (const sc of fx.scrolls) {
-        const ox = Math.sign(sc.sx) * sc.sx * sc.sx * time
-        const oy = Math.sign(sc.sy) * sc.sy * sc.sy * time
-        u = frac((u + ox) * sc.rx)
-        v = frac((v + oy) * sc.ry)
+      for (const it of fx.items) {
+        if (it.type === 'scroll') {
+          const ox = Math.sign(it.sx) * it.sx * it.sx * time
+          const oy = Math.sign(it.sy) * it.sy * it.sy * time
+          u = frac((u + ox) * it.rx)
+          v = frac((v + oy) * it.ry)
+        } else if (it.type === 'shake') {
+          const m = textures.get(it.mask) || WHITE
+          const f = sample(m, u, v)
+          const flow = m.rg88 ? [f[3] / 255, f[0] / 255] : [f[0] / 255, f[1] / 255]
+          const flowMask = [(flow[0] - 0.498) * 2, (flow[1] - 0.498) * 2]
+          const phase = Math.PI / 2 // util/white 相位图 → r=1 → ×π/2
+          const t2 = it.speed * time + phase
+          let off = Math.sin(frac(t2 / (Math.PI / 2)) * (Math.PI / 2)) * 0.498 + 0.5
+          const base = Math.cos(t2) >= 0 ? 1 : 0
+          off = base === 1 ? Math.pow(off, it.friction[1]) : 1 - Math.pow(1 - off, it.friction[0])
+          off = Math.min(1, Math.max(0, (off - it.bounds[0]) * (1 / (it.bounds[1] - it.bounds[0]))))
+          off = off * 2 - 1
+          const amp2 = it.amp * it.amp
+          u += off * amp2 * flowMask[0]
+          v += off * amp2 * flowMask[1]
+        } else if (it.type === 'waves') {
+          const m = textures.get(it.mask) || WHITE
+          const f = sample(m, u, v)
+          const mask = m.rg88 ? f[3] / 255 : f[0] / 255
+          const dir = rotate2([0, 1], it.direction)
+          const pos = Math.abs((u - 0.5) * dir[0] + (v - 0.5) * dir[1])
+          const dist = time * it.speed + (u * dir[0] + v * dir[1]) * (it.scale + it.perspective * pos)
+          const s = Math.sin(dist) * (it.strength * it.strength + it.perspective * pos) * mask
+          u += dir[1] * s
+          v += -dir[0] * s
+        }
       }
       const t = sample(tex, u, v)
       let r = t[0] / 255 * layer.color[0] * layer.brightness
@@ -174,6 +222,12 @@ function mix(a, b, t) {
 
 function frac(x) {
   return x - Math.floor(x)
+}
+
+function rotate2(v, a) {
+  const c = Math.cos(a)
+  const s = Math.sin(a)
+  return [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
 }
 
 function vec3(s) {

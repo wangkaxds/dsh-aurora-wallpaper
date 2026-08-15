@@ -56,6 +56,26 @@ async function rebuild() {
   textures.set('util/white', white)
   textures.set('util/noise', white)
   let n = 0
+  async function loadTex(name) {
+    if (textures.has(name)) return textures.get(name)
+    const texEntry = getEntry(pkg, 'materials/' + name + '.tex')
+    if (!texEntry) return null
+    const tex = parseTex(texEntry)
+    const m = decodeMip0(tex)
+    const rg88 = tex.format === 8
+    let entry = null
+    if (m.png !== undefined || (m.image !== undefined && m.fif === FIF.JPEG)) {
+      const blob = new Blob([m.png || m.image], { type: m.png ? 'image/png' : 'image/jpeg' })
+      const bmp = await createImageBitmap(blob)
+      entry = { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height, rg88 }
+    } else if (m.image !== undefined) {
+      return null
+    } else {
+      entry = { glTex: makeTexture(renderer.gl, m.rgba, m.width, m.height), width: m.width, height: m.height, rg88 }
+    }
+    textures.set(name, entry)
+    return entry
+  }
   for (const layer of scene.layers) {
     if (!layer.image) continue
     try {
@@ -67,29 +87,31 @@ async function rebuild() {
       const material = JSON.parse(getEntry(pkg, mat.materialPath).toString('utf8').replace(/^\uFEFF/, ''))
       const pass = material.passes && material.passes[0]
       const texName = pass && pass.textures && pass.textures[0]
-      if (!texName) continue
-      if (textures.has(texName)) { layer.textureName = texName; continue }
-      const texEntry = getEntry(pkg, 'materials/' + texName + '.tex')
-      if (!texEntry) continue
-      const tex = parseTex(texEntry)
-      const m = decodeMip0(tex)
-      if (m.png !== undefined || (m.image !== undefined && m.fif === FIF.JPEG)) {
-        const blob = new Blob([m.png || m.image], { type: m.png ? 'image/png' : 'image/jpeg' })
-        const bmp = await createImageBitmap(blob)
-        textures.set(texName, { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height })
-      } else if (m.image !== undefined) {
-        continue
-      } else {
-        textures.set(texName, { glTex: makeTexture(renderer.gl, m.rgba, m.width, m.height), width: m.width, height: m.height })
+      if (texName) {
+        if (textures.has(texName)) {
+          layer.textureName = texName
+          n++
+        } else if (await loadTex(texName)) {
+          layer.textureName = texName
+          n++
+        }
       }
-      layer.textureName = texName
-      n++
+      // 效果引用纹理（shake 流动图 / waterwaves 蒙版）
+      for (const e of layer.effects || []) {
+        for (const p of e.passes || []) {
+          for (const tn of p.textures || []) {
+            if (typeof tn === 'string' && tn !== '' && !tn.startsWith('util/') && !tn.startsWith('_rt_')) {
+              await loadTex(tn)
+            }
+          }
+        }
+      }
     } catch (e) {
       status.textContent = '加载失败: ' + (e && e.message)
       return
     }
   }
-  status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（Phase 2：静态帧 + tint/colorkey）'
+  status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（Phase 3：滚动/抖动/波纹）'
   startTime = performance.now()
 }
 
