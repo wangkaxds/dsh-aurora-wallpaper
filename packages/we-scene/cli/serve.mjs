@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildLibBundle } from '../src/bundle.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const port = 8123
@@ -15,6 +16,10 @@ const mime = {
   '.jpg': 'image/jpeg',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
+}
+
+async function readFileUtf8(p) {
+  return await readFile(p, 'utf8')
 }
 
 createServer(async (req, res) => {
@@ -37,6 +42,26 @@ createServer(async (req, res) => {
       }
       return
     }
+    if (urlPath === '/lib.js') {
+      // 渲染器打包模块（Harness 集成用同一套代码）
+      const src = buildLibBundle((p) => readFileSyncSafe(p), root)
+      res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' })
+      res.end(src)
+      return
+    }
+    if (urlPath === '/test-live.html') {
+      const src = await readFileUtf8(join(root, 'demo/test-live.html'))
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+      res.end(src)
+      return
+    }
+    const pkgMatch = /^\/pkg\/(\d+)$/.exec(urlPath)
+    if (pkgMatch) {
+      const data = await readFile('D:\\steam\\steamapps\\workshop\\content\\431960\\' + pkgMatch[1] + '\\scene.pkg')
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' })
+      res.end(data)
+      return
+    }
     let rel = urlPath.replace(/^\/+/, '') || 'demo/index.html'
     if (rel.endsWith('/')) rel += 'index.html'
     const file = join(root, rel)
@@ -55,3 +80,8 @@ createServer(async (req, res) => {
 }).listen(port, () => {
   console.log('we-scene 演示: http://localhost:' + port + '/demo/')
 })
+
+import { readFileSync } from 'node:fs'
+function readFileSyncSafe(p) {
+  return readFileSync(p)
+}

@@ -71,26 +71,11 @@ function buildFragSource() {
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
       flow${i} = (flow${i} - vec2(0.498)) * 2.0;
       float amount${i} = min(1.0, length(flow${i}));
-      float ph${i} = texture(u_Aux, uv * u_FxP[${i}].z).r;
       float amp${i} = u_FxP[${i}].y * 0.1;
-      float c1${i} = fx_frac(u_Time * u_FxP[${i}].x);
-      float c2${i} = fx_frac(u_Time * u_FxP[${i}].x + 0.5);
-      float c3${i} = fx_frac(0.25 + u_Time * u_FxP[${i}].x);
-      float c4${i} = fx_frac(0.25 + u_Time * u_FxP[${i}].x + 0.5);
-      float b1${i} = 2.0 * abs(c1${i} - 0.5);
-      float b2${i} = 2.0 * abs(c3${i} - 0.5);
-      vec2 o1${i} = flow${i} * ((c1${i} - 0.5) * amp${i});
-      vec2 o2${i} = flow${i} * ((c2${i} - 0.5) * amp${i});
-      vec2 o3${i} = flow${i} * ((c3${i} - 0.5) * amp${i});
-      vec2 o4${i} = flow${i} * ((c4${i} - 0.5) * amp${i});
-      vec4 a1${i} = texture(u_Tex, uv + o1${i});
-      vec4 a2${i} = texture(u_Tex, uv + o2${i});
-      vec4 a3${i} = texture(u_Tex, uv + o3${i});
-      vec4 a4${i} = texture(u_Tex, uv + o4${i});
-      vec4 fA${i} = mix(a1${i}, a2${i}, b1${i});
-      vec4 fB${i} = mix(a3${i}, a4${i}, b2${i});
-      vec4 fM${i} = mix(fA${i}, fB${i}, smoothstep(0.2, 0.8, ph${i}));
-      t = mix(t, fM${i}, amount${i});
+      float cx${i} = fx_frac(u_Time * u_FxP[${i}].x);
+      float v${i} = cx${i} < 0.5 ? cx${i} * 2.0 - 0.5 : 1.5 - cx${i} * 2.0;
+      vec4 fs${i} = texture(u_Tex, uv + flow${i} * (amp${i} * v${i}));
+      t = mix(t, fs${i}, amount${i});
   }`)
   }
   return `#version 300 es

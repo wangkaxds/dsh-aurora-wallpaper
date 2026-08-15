@@ -253,28 +253,12 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
         const mx = (flow[0] - 0.498) * 2
         const my = (flow[1] - 0.498) * 2
         const amount = Math.min(1, Math.hypot(mx, my))
-        const phaseTex = textures.get(it.phase) || WHITE
-        const pf = sample(phaseTex, u * it.phaseScale, v * it.phaseScale)
-        const ph = pf[0] / 255
         const amp = it.strength * 0.1
-        const c1 = frac(time * it.speed)
-        const c2 = frac(time * it.speed + 0.5)
-        const c3 = frac(0.25 + time * it.speed)
-        const c4 = frac(0.25 + time * it.speed + 0.5)
-        const blend = 2 * Math.abs(c1 - 0.5)
-        const blend2 = 2 * Math.abs(c3 - 0.5)
-        const s1 = (c1 - 0.5) * amp
-        const s2 = (c2 - 0.5) * amp
-        const s3 = (c3 - 0.5) * amp
-        const s4 = (c4 - 0.5) * amp
-        const a1 = sample(tex, u + mx * s1, v + my * s1)
-        const a2 = sample(tex, u + mx * s2, v + my * s2)
-        const a3 = sample(tex, u + mx * s3, v + my * s3)
-        const a4 = sample(tex, u + mx * s4, v + my * s4)
-        const fA = mix4(a1, a2, blend)
-        const fB = mix4(a3, a4, blend2)
-        const fM = mix4(fA, fB, smoothstep(0.2, 0.8, ph))
-        t = mix4(t, fM, amount)
+        // 无缝三角波往返（原公式 frac 周期在整数处跳变 → 改为平滑往返，幅度/速度一致）
+        const xw = frac(time * it.speed)
+        const tv = xw < 0.5 ? xw * 2 - 0.5 : 1.5 - xw * 2
+        const fs = sample(tex, u + mx * amp * tv, v + my * amp * tv)
+        t = mix4(t, fs, amount)
       }
       let r = t[0] / 255 * layer.color[0] * layer.brightness
       let g = t[1] / 255 * layer.color[1] * layer.brightness

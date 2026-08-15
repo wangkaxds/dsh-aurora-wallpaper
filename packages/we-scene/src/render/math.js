@@ -61,15 +61,16 @@ export function mat4TransformPoint(m, x, y, z) {
   ]
 }
 
-// 场景默认相机（WE 2D 约定：世界坐标 = 像素，y 向下；eye(0,0,0) center(0,0,-1) up(0,1,0)）
+// 场景默认相机（WE 2D 约定：世界坐标 = 像素，y 向下）
+// 注意：2D 正交场景渲染时忽略 scene.json 的 eye/center/up（那是编辑器最后保存的相机状态，运行时不用），使用固定相机
 export function buildCamera(scene, width, height) {
   const general = scene.general
-  const eye = parseVec(general && general.camera ? '0 0 0' : '0 0 0')
   const cam = scene.camera
   const eyeV = cam && cam.eye ? parseVec(cam.eye) : [0, 0, 0]
   const centerV = cam && cam.center ? parseVec(cam.center) : [0, 0, -1]
   const upV = cam && cam.up ? parseVec(cam.up) : [0, 1, 0]
-  const view = mat4LookAt(eyeV, centerV, upV)
+  const isOrtho = !general || general.orthogonalprojection || !general.fov
+  const view = isOrtho ? mat4Identity() : mat4LookAt(eyeV, centerV, upV)
   const projW = general && general.orthogonalprojection ? general.orthogonalprojection.width || width : width
   const projH = general && general.orthogonalprojection ? general.orthogonalprojection.height || height : height
   // 世界 y 向下：y=0 → NDC +1（屏幕顶）。ortho(left, right, top=projH, bottom=0)
