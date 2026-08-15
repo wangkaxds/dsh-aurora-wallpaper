@@ -31,7 +31,8 @@ export function parseScene(sceneJson, project) {
     visible: parseBool(o.visible, true),
     image: typeof o.image === 'string' ? o.image : null,
     particle: typeof o.particle === 'string' ? o.particle : null,
-    solid: !!o.solid && typeof o.particle !== 'string' && typeof o.image !== 'string',
+    // WE 的 solid 层：无 image/particle，或 image 指向内置 models/util/*（纯色层，无纹理）
+    solid: !!o.solid && typeof o.particle !== 'string' && (typeof o.image !== 'string' || o.image.indexOf('models/util/') === 0),
     origin: parseVec3(o.origin || '0 0 0'),
     scale: parseVec3(o.scale || '1 1 1'),
     angles: parseVec3(o.angles || '0 0 0'),

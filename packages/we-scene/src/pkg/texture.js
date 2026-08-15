@@ -146,6 +146,26 @@ export function decodeMip0(tex) {
   return { width: m.width, height: m.height, rgba }
 }
 
+// 解码全部 mip 级别 → [{ width, height, rgba }]（PNG/JPEG 等 freeImage 格式只有一级）
+export function decodeMips(tex) {
+  const image = tex.images[0]
+  if (!image || image.length === 0) throw new Error('无图像数据')
+  const out = []
+  for (const m of image) {
+    if (tex.freeImageFormat !== FIF.UNKNOWN) {
+      out.push({ width: m.width, height: m.height, image: m.data, fif: tex.freeImageFormat })
+      continue
+    }
+    const rgba = decodePixels(tex.format, m.data, m.width, m.height)
+    out.push({ width: m.width, height: m.height, rgba })
+  }
+  // 第 0 级可能带对齐填充，裁剪到声明尺寸
+  if (out.length > 0 && (out[0].width !== tex.width || out[0].height !== tex.height) && out[0].rgba) {
+    out[0] = { width: tex.width, height: tex.height, rgba: cropRgba(out[0].rgba, out[0].width, out[0].height, tex.width, tex.height) }
+  }
+  return out
+}
+
 function cropRgba(rgba, sw, sh, w, h) {
   const out = new Uint8Array(w * h * 4)
   for (let y = 0; y < h; y++) {

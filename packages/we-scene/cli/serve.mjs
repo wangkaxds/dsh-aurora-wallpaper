@@ -42,6 +42,36 @@ createServer(async (req, res) => {
       }
       return
     }
+    if (urlPath === '/we-assets/noise.tex') {
+      // 官方 util/noise.tex（含 mip 链）
+      try {
+        const data = await readFile('D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\materials\\util\\noise.tex')
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' })
+        res.end(data)
+      } catch (e) {
+        res.writeHead(404)
+        res.end('noise.tex not found')
+      }
+      return
+    }
+    if (urlPath.startsWith('/we-assets/shaders/')) {
+      // WE shader 源文件（效果/层 shader 与公共头文件）：运行时读取本机安装，不分发
+      const rel = urlPath.slice('/we-assets/shaders/'.length)
+      if (!/^[A-Za-z0-9_./-]+$/.test(rel) || rel.includes('..')) {
+        res.writeHead(403)
+        res.end()
+        return
+      }
+      try {
+        const data = await readFile('D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\shaders\\' + rel)
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end(data)
+      } catch (e) {
+        res.writeHead(404)
+        res.end('shader not found: ' + rel)
+      }
+      return
+    }
     if (urlPath === '/lib.js') {
       // 渲染器打包模块（Harness 集成用同一套代码）
       const src = buildLibBundle((p) => readFileSyncSafe(p), root)

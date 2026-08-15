@@ -4,8 +4,11 @@ const LIB_FILES = [
   'src/pkg/container.js',
   'src/pkg/texture.js',
   'src/scene/parse.js',
+  'src/scene/effects-parse.js',
   'src/render/math.js',
   'src/render/noise.js',
+  'src/render/hlsl2glsl.js',
+  'src/render/effects.js',
   'src/render/renderer.js',
 ]
 

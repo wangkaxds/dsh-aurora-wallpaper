@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>we-scene verify</title>
+</head>
+<body>
+<canvas id="cv" width="64" height="64"></canvas>
+<script type="module">
+// 数值验证页：cli/verify-effects.mjs 通过 CDP 调用 __weVerifyRun 渲染合成场景并读回像素
+import { createRenderer, makeTexture } from '../src/render/renderer.js'
+const cv = document.getElementById('cv')
+const renderer = createRenderer(cv, {
+  shaderResolver: (rel) => fetch('/we-assets/shaders/' + rel.slice('shaders/'.length), { cache: 'no-store' }).then((r) => (r.ok ? r.text() : null)).catch(() => null),
+})
+window.__weVerifyRun = async function (sceneObj, texData, width, height, time) {
+  const textures = new Map()
+  for (const name of Object.keys(texData)) {
+    const d = texData[name]
+    const rgba = new Uint8Array(d.rgba)
+    textures.set(name, { glTex: makeTexture(renderer.gl, rgba, d.width, d.height), width: d.width, height: d.height, rg88: !!d.rg88 })
+  }
+  // 合成场景的效果条目补充 materialPasses（从 file 推导 shader 名 + scene pass 参数）
+  for (const l of sceneObj.layers || []) {
+    for (const e of l.effects || []) {
+      if (!e.materialPasses && e.file) {
+        const shader = 'effects/' + e.file.replace(/^effects\//, '').replace(/\/effect\.json$/, '')
+        const p = (e.passes && e.passes[0]) || {}
+        e.materialPasses = [{
+          shader,
+          copyCommand: false,
+          target: null,
+          binds: [],
+          blending: 'normal',
+          textures: p.textures || [],
+          combos: p.combos || {},
+          constants: p.constantshadervalues || {},
+        }]
+      }
+    }
+  }
+  cv.width = width
+  cv.height = height
+  await renderer.render(sceneObj, textures, width, height, time)
+  const buf = new Uint8Array(width * height * 4)
+  renderer.gl.readPixels(0, 0, width, height, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, buf)
+  return Array.from(buf)
+}
+window.__weVerifyStatus = function () { return 'ready' }
+window.__weVerifyGl = renderer.gl
+</script>
+</body>
+</html>

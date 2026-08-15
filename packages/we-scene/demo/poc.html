@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>POC: 转译 shader 渲染验证</title>
+</head>
+<body>
+<canvas id="cv" width="64" height="64"></canvas>
+<script type="module">
+// POC：编译转译后的 shake shader，跑一个全屏 pass，输出像素供 cli/poc-verify.mjs 与 effects.js 对比
+import { makeTexture } from '../src/render/renderer.js'
+const cv = document.getElementById('cv')
+const gl = cv.getContext('webgl2', { premultipliedAlpha: false, antialias: false, alpha: false })
+if (!gl) throw new Error('无 WebGL2')
+
+function compile(type, src) {
+  const s = gl.createShader(type)
+  gl.shaderSource(s, src)
+  gl.compileShader(s)
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('编译失败: ' + gl.getShaderInfoLog(s))
+  return s
+}
+async function loadProgram(vertUrl, fragUrl) {
+  const [vsSrc, fsSrc] = await Promise.all([
+    fetch(vertUrl, { cache: 'no-store' }).then((r) => r.text()),
+    fetch(fragUrl, { cache: 'no-store' }).then((r) => r.text()),
+  ])
+  const p = gl.createProgram()
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc))
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc))
+  gl.linkProgram(p)
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('链接失败: ' + gl.getProgramInfoLog(p))
+  return p
+}
+
+function tex8(fn) {
+  const rgba = new Uint8Array(8 * 8 * 4)
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const p = fn(x, y)
+      rgba[(y * 8 + x) * 4] = p[0]
+      rgba[(y * 8 + x) * 4 + 1] = p[1]
+      rgba[(y * 8 + x) * 4 + 2] = p[2]
+      rgba[(y * 8 + x) * 4 + 3] = p[3]
+    }
+  }
+  return makeTexture(gl, rgba, 8, 8)
+}
+const base = tex8((x, y) => [x * 31 + 10, y * 29 + 5, 128, 255])
+const flow = tex8((x, y) => [Math.round(128 + 40 * Math.sin((2 * Math.PI * x) / 8)), Math.round(128 + 40 * Math.sin((2 * Math.PI * y) / 8)), 128, 255])
+const white = makeTexture(gl, new Uint8Array([255, 255, 255, 255]), 1, 1)
+
+// 全屏 quad（与参考实现 passSpacePosition/texcoordPass 一致：v=1 在帧缓冲顶）
+const vao = gl.createVertexArray()
+gl.bindVertexArray(vao)
+const buf = gl.createBuffer()
+gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -1, 1, 0, 0, 1,
+  -1, -1, 0, 0, 0,
+  1, 1, 0, 1, 1,
+  1, 1, 0, 1, 1,
+  -1, -1, 0, 0, 0,
+  1, -1, 0, 1, 0,
+]), gl.STATIC_DRAW)
+
+async function run(direction) {
+  const p = await loadProgram('/demo/poc/shake-d' + direction + '.vert.glsl', '/demo/poc/shake-d' + direction + '.frag.glsl')
+  gl.useProgram(p)
+  const loc = {
+    pos: gl.getAttribLocation(p, 'a_Position'),
+    uv: gl.getAttribLocation(p, 'a_TexCoord'),
+  }
+  gl.enableVertexAttribArray(loc.pos)
+  gl.vertexAttribPointer(loc.pos, 3, gl.FLOAT, false, 20, 0)
+  gl.enableVertexAttribArray(loc.uv)
+  gl.vertexAttribPointer(loc.uv, 2, gl.FLOAT, false, 20, 12)
+  const set1i = (n, v) => { const l = gl.getUniformLocation(p, n); if (l !== null) gl.uniform1i(l, v) }
+  const set1f = (n, v) => { const l = gl.getUniformLocation(p, n); if (l !== null) gl.uniform1f(l, v) }
+  const set2f = (n, a, b) => { const l = gl.getUniformLocation(p, n); if (l !== null) gl.uniform2f(l, a, b) }
+  const set4f = (n, a, b, c, d) => { const l = gl.getUniformLocation(p, n); if (l !== null) gl.uniform4f(l, a, b, c, d) }
+  const setM4 = (n, m) => { const l = gl.getUniformLocation(p, n); if (l !== null) gl.uniformMatrix4fv(l, false, m) }
+  setM4('g_ModelViewProjectionMatrix', new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]))
+  set4f('g_Texture0Resolution', 8, 8, 8, 8)
+  set4f('g_Texture1Resolution', 8, 8, 8, 8)
+  gl.activeTexture(gl.TEXTURE0)
+  gl.bindTexture(gl.TEXTURE_2D, base)
+  set1i('g_Texture0', 0)
+  gl.activeTexture(gl.TEXTURE1)
+  gl.bindTexture(gl.TEXTURE_2D, flow)
+  set1i('g_Texture1', 1)
+  gl.activeTexture(gl.TEXTURE2)
+  gl.bindTexture(gl.TEXTURE_2D, white)
+  set1i('g_Texture2', 2)
+  set1f('g_Time', 1.7)
+  set1f('g_Speed', 1.3)
+  set1f('g_Amp', 0.3)
+  set2f('g_Friction', 2, 0.5)
+  set2f('g_Bounds', 0.2, 0.8)
+  gl.viewport(0, 0, 64, 64)
+  gl.drawArrays(gl.TRIANGLES, 0, 6)
+  const out = new Uint8Array(64 * 64 * 4)
+  gl.readPixels(0, 0, 64, 64, gl.RGBA, gl.UNSIGNED_BYTE, out)
+  return Array.from(out)
+}
+
+window.__wePocRun = run
+window.__wePocStatus = 'ready'
+</script>
+</body>
+</html>

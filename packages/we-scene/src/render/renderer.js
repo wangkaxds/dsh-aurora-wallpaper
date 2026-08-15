@@ -1,136 +1,9 @@
-// WebGL2 渲染器：与 cpu.js 同一套场景模型/矩阵/效果语义
-// Phase 3：图像/纯色图层 + scroll / shake / waterwaves 位移 + tint / colorkey
-import { mat4Identity, mat4Multiply, mat4RotateZ, mat4Translate, mat4Scale, buildCamera } from './math.js'
-
-const VERT = `#version 300 es
-in vec3 a_Position;
-in vec2 a_TexCoord;
-uniform mat4 u_MVP;
-out vec2 v_UV;
-void main() {
-  gl_Position = u_MVP * vec4(a_Position, 1.0);
-  v_UV = a_TexCoord;
-}`
-
-function buildFragSource() {
-  // GLSL ES 3.0 不允许 sampler 数组用变量下标 → 用 JS 展开成 8 个常量下标块
-  const dispBlocks = []
-  const flowBlocks = []
-  for (let i = 0; i < 8; i++) {
-    dispBlocks.push(`
-  if (${i} < u_FxCount) {
-    int ty${i} = u_FxType[${i}];
-    if (ty${i} == 0) {
-      float ox${i} = sign(u_FxP[${i}].x) * u_FxP[${i}].x * u_FxP[${i}].x * u_Time;
-      float oy${i} = sign(u_FxP[${i}].y) * u_FxP[${i}].y * u_FxP[${i}].y * u_Time;
-      uv = vec2(fx_frac((uv0.x + ox${i}) * u_FxP[${i}].z), fx_frac((uv0.y + oy${i}) * u_FxP[${i}].w));
-    } else if (ty${i} == 1) {
-      vec4 f${i} = texture(u_FxMask[${i}], uv0);
-      vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
-      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
-      vec2 flowMask${i} = (flow${i} - vec2(0.498)) * 2.0 * fg${i};
-      // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
-      float t2${i} = u_FxP[${i}].x * u_Time;
-      float off${i} = sin(t2${i}) * 0.498 + 0.5;
-      float base${i} = cos(t2${i}) >= 0.0 ? 1.0 : 0.0;
-      off${i} = base${i} > 0.5 ? pow(off${i}, u_FxP[${i}].w) : 1.0 - pow(1.0 - off${i}, u_FxP[${i}].z);
-      off${i} = off${i} * 2.0 - 1.0;
-      float amp2${i} = u_FxP[${i}].y * u_FxP[${i}].y * u_AmpScale;
-      uv += off${i} * amp2${i} * flowMask${i};
-    } else if (ty${i} == 2) {
-      vec4 f${i} = texture(u_FxMask[${i}], uv0);
-      float mask${i} = u_FxRG88[${i}] > 0.5 ? f${i}.a : f${i}.r;
-      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
-      vec2 dir${i} = vec2(-sin(u_FxP[${i}].w * fg${i}), cos(u_FxP[${i}].w * fg${i}));
-      float pos${i} = abs(dot(uv0 - vec2(0.5), dir${i}));
-      float dist${i} = u_Time * u_FxP[${i}].x + dot(uv0, dir${i}) * u_FxP[${i}].y;
-      float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z * u_AmpScale) * mask${i};
-      uv += vec2(dir${i}.y, -dir${i}.x) * s${i};
-    } else if (ty${i} == 3) {
-      vec4 n${i} = texture(u_Noise, uv0 * u_FxP[${i}].z);
-      float aspect${i} = u_FbSize.x / u_FbSize.y * 0.3;
-      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
-      vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w * fg${i});
-      vec2 pa${i} = rot2(uv0, u_FxP[${i}].w * fg${i});
-      float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005 * u_AmpScale;
-      amp${i} *= texture(u_FxMask[${i}], uv0).r;
-      float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
-      float sA${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 1.0);
-      float sB${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.16161616);
-      float sC${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 0.0083333);
-      float sD${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.00019841);
-      float cA${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * -0.5);
-      float cB${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * 0.041666666);
-      float cC${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * -0.0013888889);
-      float cD${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * 0.000024801587);
-      uv += vec2(zw${i}.x * (sA${i} + sB${i} + sC${i} + sD${i}) * amp${i}, zw${i}.y * (cA${i} + cB${i} + cC${i} + cD${i}) * amp${i});
-    }
-  }`)
-    flowBlocks.push(`
-  if (${i} < u_FxCount && u_FxType[${i}] == 4) {
-      vec4 f${i} = texture(u_FxMask[${i}], uv0);
-      vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
-      float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
-      flow${i} = (flow${i} - vec2(0.498)) * 2.0 * fg${i};
-      float amount${i} = min(1.0, length(flow${i}));
-      float phR${i} = smoothstep(0.2, 0.8, texture(u_Aux, uv0 * u_FxP[${i}].z).r);
-      float amp${i} = u_FxP[${i}].y * 0.1;
-      float cx${i} = fx_frac(u_Time * u_FxP[${i}].x);
-      float tv${i} = cx${i} < 0.5 ? cx${i} * 2.0 - 0.5 : 1.5 - cx${i} * 2.0;
-      vec2 off${i} = flow${i} * (amp${i} * tv${i});
-      vec4 fa${i} = texture(u_Tex, uv + off${i});
-      vec4 fb${i} = texture(u_Tex, uv - off${i});
-      t = mix(t, mix(fa${i}, fb${i}, phR${i}), amount${i});
-  }`)
-  }
-  return `#version 300 es
-precision mediump float;
-in vec2 v_UV;
-uniform sampler2D u_Tex;
-uniform vec3 u_Color;
-uniform float u_Alpha;
-uniform vec3 u_Tint;
-uniform float u_TintAlpha;
-uniform vec3 u_Key;
-uniform float u_KeyFuzz;
-uniform float u_KeyTol;
-uniform float u_Time;
-uniform int u_FxCount;
-uniform int u_FxType[8];   // 0=scroll 1=shake 2=waves 3=sway 4=flow
-uniform vec4 u_FxP[8];     // scroll:(sx,sy,rx,ry) shake:(speed,amp,fx,fy) waves:(speed,scale,strength,direction) sway:(speed,strength,noiseScale,direction) flow:(speed,strength,phaseScale,0)
-uniform sampler2D u_FxMask[8];
-uniform float u_FxRG88[8];
-uniform sampler2D u_Noise;
-uniform sampler2D u_Aux;
-uniform vec2 u_FbSize;
-uniform float u_Flip;
-uniform float u_AmpScale;
-out vec4 fragColor;
-
-float fx_frac(float x) { return x - floor(x); }
-vec2 rot2(vec2 v, float a) {
-  float c = cos(a);
-  float s = sin(a);
-  return vec2(v.x * c - v.y * s, v.x * s + v.y * c);
-}
-
-void main() {
-  vec2 uv0 = v_UV;
-  vec2 uv = v_UV;
-${dispBlocks.join('')}
-  vec4 t = texture(u_Tex, uv);
-${flowBlocks.join('')}
-  vec3 rgb = t.rgb * u_Color;
-  float a = t.a * u_Alpha;
-  rgb = mix(rgb, u_Tint, u_TintAlpha);
-  float delta = abs(u_Key.r - rgb.r) + abs(u_Key.g - rgb.g) + abs(u_Key.b - rgb.b);
-  float blend = smoothstep(0.001, 0.002 + u_KeyFuzz, delta - u_KeyTol);
-  a *= mix(0.0, 1.0, blend);
-  fragColor = vec4(rgb, a);
-}`
-}
-
-const FRAG = buildFragSource()
+// WebGL2 通用 pass 管线渲染器（移植 linux-wallpaperengine 架构）：
+// 每层 copy pass → 效果链（WE shader 转译执行，FBO 乒乓）→ 合成到画布。
+// copy/合成用自写 shader；效果 pass 用转译 WE shader（MVP=单位矩阵，mul 转置无影响）。
+// 空间：层 FBO 内容正立（v-down 显示空间），与 WE 帧缓冲空间（v-up+倒置画面）数学等价（docs/WE_RENDER_CONVENTIONS.md §1）。
+import { mat4Identity, mat4Multiply, mat4Ortho, mat4RotateZ, mat4Translate, mat4Scale, buildCamera } from './math.js'
+import { hlsl2glsl } from './hlsl2glsl.js'
 
 const ALIGN = {
   center: [0.5, 0.5],
@@ -144,70 +17,341 @@ const ALIGN = {
   bottomright: [1, 1],
 }
 
-const MAX_FX = 8
+const COPY_VERT = `#version 300 es
+in vec3 a_Position;
+in vec2 a_TexCoord;
+uniform mat4 u_MVP;
+out vec2 v_UV;
+void main() {
+  gl_Position = u_MVP * vec4(a_Position, 1.0);
+  v_UV = a_TexCoord;
+}`
 
-export function createRenderer(canvas) {
-  const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, alpha: false })
-  if (!gl) throw new Error('当前浏览器不支持 WebGL2')
+const COPY_FRAG = `#version 300 es
+precision mediump float;
+in vec2 v_UV;
+uniform sampler2D u_Tex;
+uniform vec4 u_Color4;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(u_Tex, v_UV) * u_Color4;
+}`
 
-  const program = linkProgram(gl, VERT, FRAG)
-  gl.useProgram(program)
-  const loc = {
-    mvp: gl.getUniformLocation(program, 'u_MVP'),
-    color: gl.getUniformLocation(program, 'u_Color'),
-    alpha: gl.getUniformLocation(program, 'u_Alpha'),
-    tint: gl.getUniformLocation(program, 'u_Tint'),
-    tintAlpha: gl.getUniformLocation(program, 'u_TintAlpha'),
-    key: gl.getUniformLocation(program, 'u_Key'),
-    keyFuzz: gl.getUniformLocation(program, 'u_KeyFuzz'),
-    keyTol: gl.getUniformLocation(program, 'u_KeyTol'),
-    time: gl.getUniformLocation(program, 'u_Time'),
-    fxCount: gl.getUniformLocation(program, 'u_FxCount'),
-    fxType: gl.getUniformLocation(program, 'u_FxType[0]'),
-    fxP: gl.getUniformLocation(program, 'u_FxP[0]'),
-    fxMask: new Array(MAX_FX).fill(0).map((_, i) => gl.getUniformLocation(program, 'u_FxMask[' + i + ']')),
-    fxRG88: gl.getUniformLocation(program, 'u_FxRG88[0]'),
-    noise: gl.getUniformLocation(program, 'u_Noise'),
-    aux: gl.getUniformLocation(program, 'u_Aux'),
-    fbSize: gl.getUniformLocation(program, 'u_FbSize'),
-    flip: gl.getUniformLocation(program, 'u_Flip'),
-    ampScale: gl.getUniformLocation(program, 'u_AmpScale'),
-    aPos: gl.getAttribLocation(program, 'a_Position'),
-    aUv: gl.getAttribLocation(program, 'a_TexCoord'),
-  }
+const COMPOSITE_FRAG = `#version 300 es
+precision mediump float;
+in vec2 v_UV;
+uniform sampler2D u_Tex;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(u_Tex, v_UV);
+}`
 
-  // 单位四边形（两个三角形）
-  const vao = gl.createVertexArray()
-  gl.bindVertexArray(vao)
-  const posBuf = gl.createBuffer()
-  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf)
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+// quad 顶点（每顶点 5 float：x,y,z,u,v）
+// WE 同款空间：层 FBO 内容倒置（FBO 顶=纹理底行），pass quad 顶 v=1（顶采顶直通），合成时再正过来。
+function layerQuadVerts(w, h) {
+  return new Float32Array([
+    0, h, 0, 0, 1, // 层空间顶（y=h）采样 v=1（纹理底行）→ FBO 顶=纹理底（倒置，与 WE 一致）
+    0, 0, 0, 0, 0,
+    w, h, 0, 1, 1,
+    w, h, 0, 1, 1,
+    0, 0, 0, 0, 0,
+    w, 0, 0, 1, 0,
+  ])
+}
+function passQuadVerts() {
+  return new Float32Array([
+    -1, 1, 0, 0, 1, // NDC 顶 v=1（FBO 纹理 v=1=顶行，顶采顶直通）
+    -1, -1, 0, 0, 0,
+    1, 1, 0, 1, 1,
+    1, 1, 0, 1, 1,
+    -1, -1, 0, 0, 0,
+    1, -1, 0, 1, 0,
+  ])
+}
+function localQuadVerts() {
+  return new Float32Array([
+    -0.5, 0.5, 0, 0, 1, // local +y = 屏幕下方（y-down 世界）：屏幕底采样 v=1（FBO 顶=纹理底）→ 屏幕底=纹理底
+    -0.5, -0.5, 0, 0, 0, // local -y = 屏幕上方：屏幕顶采样 v=0（FBO 底=纹理顶）→ 屏幕顶=纹理顶（正立）
+    0.5, 0.5, 0, 1, 1,
+    0.5, 0.5, 0, 1, 1,
     -0.5, -0.5, 0, 0, 0,
     0.5, -0.5, 0, 1, 0,
-    0.5, 0.5, 0, 1, 1,
-    -0.5, -0.5, 0, 0, 0,
-    0.5, 0.5, 0, 1, 1,
-    -0.5, 0.5, 0, 0, 1,
-  ]), gl.STATIC_DRAW)
-  gl.enableVertexAttribArray(loc.aPos)
-  gl.vertexAttribPointer(loc.aPos, 3, gl.FLOAT, false, 20, 0)
-  gl.enableVertexAttribArray(loc.aUv)
-  gl.vertexAttribPointer(loc.aUv, 2, gl.FLOAT, false, 20, 12)
+  ])
+}
 
-  // 白色 1x1 备用纹理
-  const white = makeTexture(gl, new Uint8Array([255, 255, 255, 255]), 1, 1)
+const GL_TYPES = {
+  0x1406: 'float', // FLOAT
+  0x8b50: 'vec2', // FLOAT_VEC2
+  0x8b51: 'vec3', // FLOAT_VEC3
+  0x8b52: 'vec4', // FLOAT_VEC4
+  0x1404: 'int', // INT
+  0x8b53: 'ivec2',
+  0x8b54: 'ivec3',
+  0x8b55: 'ivec4',
+  0x8b56: 'bool',
+  0x8b5c: 'mat4', // FLOAT_MAT4
+  0x8b5b: 'mat3', // FLOAT_MAT3
+}
+
+export function createRenderer(canvas, opts = {}) {
+  const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, alpha: false })
+  if (!gl) throw new Error('当前浏览器不支持 WebGL2')
+  const shaderResolver = opts.shaderResolver || (async () => null)
+
+  const copyProg = linkProgram(gl, COPY_VERT, COPY_FRAG)
+  const compProg = linkProgram(gl, COPY_VERT, COMPOSITE_FRAG)
+
+  const vao = gl.createVertexArray()
+  gl.bindVertexArray(vao)
+  const vbuf = gl.createBuffer()
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbuf)
+  gl.enableVertexAttribArray(0)
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0)
+  gl.enableVertexAttribArray(1)
+  gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12)
   gl.bindVertexArray(null)
 
-  gl.enable(gl.BLEND)
-  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+  // FBO 缓存（tag 区分用途：乒乓 A/B 必须是两个独立实例；同一 tag+尺寸复用）
+  const fboCache = new Map()
+  function getFBO(w, h, tag) {
+    const key = (tag || '') + '|' + w + 'x' + h
+    if (fboCache.has(key)) return fboCache.get(key)
+    const fbo = gl.createFramebuffer()
+    const tex = gl.createTexture()
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    const entry = { fbo, tex, width: w, height: h }
+    fboCache.set(key, entry)
+    return entry
+  }
 
-  function render(scene, textures, width, height, time = 0) {
-    const flip = globalThis.__WE_FLIP ? 1.0 : 0.0
-    const amp = globalThis.__WE_AMP !== undefined ? globalThis.__WE_AMP : 1.0
+  // 效果 shader 缓存：key = shaderName + '|' + JSON.stringify(combos)
+  const progCache = new Map()
+  const includeCache = new Map()
+  // 解析 material 元数据：uniform 声明行注释里的 {"material":"speedx","default":1} → { speedx: { uniform, default } }
+  function parseMaterialMeta(src) {
+    const meta = {}
+    const re = /uniform\s+[A-Za-z0-9_]+\s+([A-Za-z_][A-Za-z0-9_]*)[^;]*;\s*\/\/([^\n]*)/g
+    let m
+    while ((m = re.exec(src)) !== null) {
+      const uniformName = m[1]
+      const comment = m[2]
+      const mat = /"material"\s*:\s*"([^"]+)"/.exec(comment)
+      if (!mat) continue
+      const def = /"default"\s*:\s*("(?:[^"]*)"|-?\d+(?:\.\d+)?)/.exec(comment)
+      meta[mat[1]] = { uniform: uniformName, default: def ? parseDefaultValue(def[1]) : undefined }
+    }
+    return meta
+  }
+  // 纹理关联 combo：sampler uniform 注释声明 combo，且该槽提供了纹理 → combo = 1（ShaderUnit.cpp:545-617）
+  function parseTextureCombos(src) {
+    const out = []
+    const re = /uniform\s+sampler2D\s+(g_Texture(\d+))[^;]*;\s*\/\/([^\n]*)/g
+    let m
+    while ((m = re.exec(src)) !== null) {
+      const combo = /"combo"\s*:\s*"([^"]+)"/.exec(m[3])
+      if (combo) out.push({ slot: Number(m[2]), name: m[1], combo: combo[1] })
+    }
+    return out
+  }
+  function parseDefaultValue(s) {
+    if (s.startsWith('"')) return s.slice(1, -1)
+    const n = Number(s)
+    return Number.isFinite(n) ? n : undefined
+  }
+  async function getEffectProgram(shaderName, combos, providedTextures) {
+    const fragSrc = (await shaderResolver('shaders/' + shaderName + '.frag')) || ''
+    const vertSrc = (await shaderResolver('shaders/' + shaderName + '.vert')) || ''
+    // 纹理关联 combo 并入 combos（有显式值则不覆盖）
+    const effectiveCombos = { ...combos }
+    for (const tc of parseTextureCombos(fragSrc)) {
+      if (providedTextures && providedTextures[tc.slot] && effectiveCombos[tc.combo] === undefined) {
+        effectiveCombos[tc.combo] = 1
+      }
+    }
+    const key = shaderName + '|' + JSON.stringify(effectiveCombos)
+    if (progCache.has(key)) return progCache.get(key)
+    // include 同步缓存：miss 时记录并补拉，重试转译
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const missing = new Set()
+      const resolver = (file) => {
+        if (includeCache.has(file)) return includeCache.get(file)
+        missing.add(file)
+        return null
+      }
+      const fragGlsl = hlsl2glsl(fragSrc, 'frag', effectiveCombos, resolver)
+      const vertGlsl = hlsl2glsl(vertSrc, 'vert', effectiveCombos, resolver)
+      if (missing.size === 0) {
+        const prog = linkProgram(gl, vertGlsl, fragGlsl)
+        const uni = new Map()
+        const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS)
+        for (let i = 0; i < n; i++) {
+          const info = gl.getActiveUniform(prog, i)
+          const base = info.name.replace(/\[0\]$/, '')
+          uni.set(base, { loc: gl.getUniformLocation(prog, info.name), type: GL_TYPES[info.type] || 'unknown' })
+        }
+        const matMeta = { ...parseMaterialMeta(vertSrc), ...parseMaterialMeta(fragSrc) }
+        const entry = { prog, uni, matMeta, fragGlsl, vertGlsl }
+        progCache.set(key, entry)
+        return entry
+      }
+      await Promise.all(Array.from(missing).map(async (f) => {
+        includeCache.set(f, (await shaderResolver('shaders/' + f)) || '')
+      }))
+    }
+    throw new Error('include 解析失败: ' + shaderName)
+  }
+
+  const whiteTex = makeTexture(gl, new Uint8Array([255, 255, 255, 255]), 1, 1)
+
+  // ---------- uniform 设置 ----------
+  function setVal(uni, name, setter) {
+    const u = uni.get(name)
+    if (u && u.loc !== null) setter(u.loc, u.type)
+  }
+  function parseVecValue(v) {
+    if (typeof v === 'number') return [v, v, v, v]
+    const p = String(v).trim().split(/\s+/).map(Number)
+    return [p[0] || 0, p[1] || 0, p[2] || 0, p[3] || 0]
+  }
+  function setConstant(uni, name, value) {
+    const u = uni.get(name)
+    if (!u || u.loc === null) return
+    const raw = value && value.value !== undefined ? value.value : value
+    const arr = parseVecValue(raw)
+    switch (u.type) {
+      case 'float': gl.uniform1f(u.loc, arr[0]); break
+      case 'int':
+      case 'bool': gl.uniform1i(u.loc, raw === true || raw === 1 ? 1 : Math.round(arr[0])); break
+      case 'vec2': gl.uniform2f(u.loc, arr[0], arr[1]); break
+      case 'vec3': gl.uniform3f(u.loc, arr[0], arr[1], arr[2]); break
+      case 'vec4': gl.uniform4f(u.loc, arr[0], arr[1], arr[2], arr[3]); break
+      case 'mat4': gl.uniformMatrix4fv(u.loc, false, mat4Identity()); break
+      case 'mat3': gl.uniformMatrix3fv(u.loc, false, mat3Identity()); break
+      default: break
+    }
+  }
+  const mat3Identity = () => new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+
+  function bindSystemUniforms(uni, layer, time, projW, projH, mvp, modelM, viewProjM, resolutions) {
+    setVal(uni, 'g_Time', (l) => gl.uniform1f(l, time))
+    setVal(uni, 'g_Daytime', (l) => gl.uniform1f(l, 0))
+    setVal(uni, 'g_ModelViewProjectionMatrix', (l) => gl.uniformMatrix4fv(l, false, mvp))
+    setVal(uni, 'g_ModelMatrix', (l) => gl.uniformMatrix4fv(l, false, modelM))
+    setVal(uni, 'g_ViewProjectionMatrix', (l) => gl.uniformMatrix4fv(l, false, viewProjM))
+    setVal(uni, 'g_ModelViewProjectionMatrixInverse', (l) => gl.uniformMatrix4fv(l, false, mat4Identity()))
+    setVal(uni, 'g_Brightness', (l) => gl.uniform1f(l, layer.brightness))
+    setVal(uni, 'g_UserAlpha', (l) => gl.uniform1f(l, layer.alpha))
+    setVal(uni, 'g_Alpha', (l) => gl.uniform1f(l, layer.alpha))
+    setVal(uni, 'g_Color', (l) => gl.uniform3f(l, layer.color[0], layer.color[1], layer.color[2]))
+    setVal(uni, 'g_Color4', (l) => gl.uniform4f(l, layer.color[0], layer.color[1], layer.color[2], 1))
+    setVal(uni, 'g_CompositeColor', (l) => gl.uniform3f(l, layer.color[0], layer.color[1], layer.color[2]))
+    setVal(uni, 'g_TexelSize', (l) => gl.uniform2f(l, 1 / projW, 1 / projH))
+    setVal(uni, 'g_TexelSizeHalf', (l) => gl.uniform2f(l, 0.5 / projW, 0.5 / projH))
+    setVal(uni, 'g_TextureReductionScale', (l) => gl.uniform1f(l, 1))
+    setVal(uni, 'g_PointerPosition', (l) => gl.uniform2f(l, 0, 0))
+    setVal(uni, 'g_PointerPositionLast', (l) => gl.uniform2f(l, 0, 0))
+    for (let i = 0; i < 8; i++) {
+      setVal(uni, 'g_Texture' + i, (l) => gl.uniform1i(l, i))
+    }
+    for (const [i, res] of resolutions) {
+      setVal(uni, 'g_Texture' + i + 'Resolution', (l) => gl.uniform4f(l, res[0], res[1], res[2], res[3]))
+    }
+  }
+
+  // constantshadervalues 的键是 material 名 → 经 matMeta 映射到 uniform 名并设值；缺省用注释 default
+  function bindConstants(uni, constants, matMeta) {
+    for (const [matKey, value] of Object.entries(constants || {})) {
+      const entry = matMeta && matMeta[matKey]
+      if (!entry) continue
+      setConstant(uni, entry.uniform, value)
+    }
+    // 未提供的常数用 shader 注释里的 default
+    for (const [matKey, entry] of Object.entries(matMeta || {})) {
+      if (!constants || !(matKey in constants)) {
+        if (entry.default !== undefined) setConstant(uni, entry.uniform, entry.default)
+      }
+    }
+  }
+
+  function resolveTextureName(name, inputFBO, effectFBOs, textures) {
+    if (name === null || name === undefined || name === '') return null
+    if (name.startsWith('_rt_')) {
+      if (name.startsWith('_rt_imageLayerComposite')) return inputFBO
+      if (effectFBOs.has(name)) return effectFBOs.get(name)
+      return null
+    }
+    return textures.get(name) || null
+  }
+
+  // ---------- 绘制辅助 ----------
+  function uploadQuad(verts) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbuf)
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
+  }
+  function setBlend(mode) {
+    if (mode === 'translucent') {
+      gl.enable(gl.BLEND)
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    } else if (mode === 'additive') {
+      gl.enable(gl.BLEND)
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE)
+    } else {
+      gl.disable(gl.BLEND)
+    }
+  }
+  function drawQuad(prog, fbo, w, h, verts, mvp, blending) {
+    gl.useProgram(prog)
+    setBlend(blending)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo ? fbo.fbo : null)
+    gl.viewport(0, 0, w, h)
+    gl.bindVertexArray(vao)
+    uploadQuad(verts)
+    const loc = gl.getUniformLocation(prog, 'u_MVP')
+    gl.uniformMatrix4fv(loc, false, mvp)
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+  }
+
+  // ---------- 合成（层 → 画布） ----------
+  function compositeLayer(prog, inputTex, color4, layer, cam, viewProj, width, height) {
+    const a = ALIGN[layer.alignment] || [0.5, 0.5]
+    const w = layer.size[0] * layer.scale[0]
+    const h = layer.size[1] * layer.scale[1]
+    let m = mat4Identity()
+    m = mat4Translate(m, layer.origin[0], cam.projH - layer.origin[1], layer.origin[2])
+    // 旋转：参考实现 y-up 空间 rotate(-angle)，等效 y-down 屏幕 rotate(-angle)（正角度=屏幕逆时针）
+    m = mat4RotateZ(m, -layer.angles[2])
+    m = mat4Scale(m, w, h, 1)
+    const mvp = mat4Multiply(viewProj, m)
+    gl.useProgram(prog)
+    setBlend('translucent')
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, width, height)
+    gl.bindVertexArray(vao)
+    uploadQuad(localQuadVerts())
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, inputTex)
+    gl.uniform1i(gl.getUniformLocation(prog, 'u_Tex'), 0)
+    const locM = gl.getUniformLocation(prog, 'u_MVP')
+    gl.uniformMatrix4fv(locM, false, mvp)
+    const locC = gl.getUniformLocation(prog, 'u_Color4')
+    if (locC !== null) gl.uniform4f(locC, color4[0], color4[1], color4[2], color4[3])
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+  }
+
+  // ---------- 渲染入口 ----------
+  async function renderScene(scene, textures, width, height, time) {
     gl.viewport(0, 0, width, height)
     const general = scene.general || {}
     if (general.clearenabled !== false) {
-      const cc = vec3(general.clearcolor || '0 0 0')
+      const cc = parseVec3(general.clearcolor || '0 0 0')
       gl.clearColor(cc[0], cc[1], cc[2], 1)
     } else {
       gl.clearColor(0, 0, 0, 1)
@@ -215,194 +359,143 @@ export function createRenderer(canvas) {
     gl.clear(gl.COLOR_BUFFER_BIT)
     const cam = buildCamera(scene, width, height)
     const viewProj = mat4Multiply(cam.projection, cam.view)
-    gl.useProgram(program)
-    gl.bindVertexArray(vao)
-    let drawn = 0
     for (const layer of scene.layers) {
       if (!layer.visible || layer.particle) continue
-      const texObj = layer.solid || !layer.textureName ? null : textures.get(layer.textureName)
-      if (texObj && texObj.video) continue // 视频纹理图层：Phase 4 支持播放
-      const tex = texObj && texObj.glTex ? texObj.glTex : white
-      const a = ALIGN[layer.alignment] || [0.5, 0.5]
-      const w = layer.size[0] * layer.scale[0]
-      const h = layer.size[1] * layer.scale[1]
-      let m = mat4Identity()
-      m = mat4Translate(m, layer.origin[0], layer.origin[1], layer.origin[2])
-      m = mat4RotateZ(m, layer.angles[2])
-      m = mat4Scale(m, w, h, 1)
-      const mvp = mat4Multiply(viewProj, m)
-      gl.uniformMatrix4fv(loc.mvp, false, mvp)
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, tex)
-      gl.uniform3f(loc.color, layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness)
-      gl.uniform1f(loc.alpha, layer.alpha)
-      gl.uniform1f(loc.time, time)
-      gl.uniform1f(loc.flip, flip)
-      gl.uniform1f(loc.ampScale, amp)
-      // 全局噪声（util/noise）绑定到 9 号纹理单元
-      const noiseTex = textures.get('util/noise')
-      gl.activeTexture(gl.TEXTURE9)
-      gl.bindTexture(gl.TEXTURE_2D, noiseTex && noiseTex.glTex ? noiseTex.glTex : white)
-      gl.uniform1i(loc.noise, 9)
-      gl.uniform2f(loc.fbSize, texObj ? texObj.width : 1, texObj ? texObj.height : 1)
-      const fx = effectUniforms(layer, time)
-      // 水流相位纹理（本图层第一个 flow 效果的 phase 纹理）绑定到 10 号单元
-      const flowItem = fx.items.find((it) => it.type === 'flow')
-      const auxTex = flowItem && flowItem.phase ? textures.get(flowItem.phase) : null
-      gl.activeTexture(gl.TEXTURE10)
-      gl.bindTexture(gl.TEXTURE_2D, auxTex && auxTex.glTex ? auxTex.glTex : white)
-      gl.uniform1i(loc.aux, 10)
-      gl.uniform3f(loc.tint, fx.tint[0], fx.tint[1], fx.tint[2])
-      gl.uniform1f(loc.tintAlpha, fx.tintAlpha)
-      gl.uniform3f(loc.key, fx.key[0], fx.key[1], fx.key[2])
-      gl.uniform1f(loc.keyFuzz, fx.fuzz)
-      gl.uniform1f(loc.keyTol, fx.tol)
-      const count = Math.min(fx.items.length, MAX_FX)
-      const types = new Int32Array(MAX_FX)
-      const params = new Float32Array(MAX_FX * 4)
-      const rg88 = new Float32Array(MAX_FX)
-      gl.uniform1i(loc.fxCount, count)
-      for (let i = 0; i < count; i++) {
-        const it = fx.items[i]
-        types[i] = it.type === 'scroll' ? 0 : it.type === 'shake' ? 1 : it.type === 'waves' ? 2 : it.type === 'sway' ? 3 : 4
-        if (it.type === 'scroll') {
-          params[i * 4] = it.sx
-          params[i * 4 + 1] = it.sy
-          params[i * 4 + 2] = it.rx
-          params[i * 4 + 3] = it.ry
-        } else if (it.type === 'shake') {
-          params[i * 4] = it.speed
-          params[i * 4 + 1] = it.amp
-          params[i * 4 + 2] = it.friction[0]
-          params[i * 4 + 3] = it.friction[1]
-        } else if (it.type === 'waves') {
-          params[i * 4] = it.speed
-          params[i * 4 + 1] = it.scale
-          params[i * 4 + 2] = it.strength
-          params[i * 4 + 3] = it.direction
-        } else if (it.type === 'sway') {
-          params[i * 4] = it.speed
-          params[i * 4 + 1] = it.strength
-          params[i * 4 + 2] = it.noiseScale
-          params[i * 4 + 3] = it.direction
-        } else {
-          params[i * 4] = it.speed
-          params[i * 4 + 1] = it.strength
-          params[i * 4 + 2] = it.phaseScale
-          params[i * 4 + 3] = 0
-        }
-        const maskTex = it.mask ? textures.get(it.mask) || null : null
-        if (maskTex) {
-          gl.activeTexture(gl.TEXTURE1 + i)
-          gl.bindTexture(gl.TEXTURE_2D, maskTex.glTex)
-          gl.uniform1i(loc.fxMask[i], 1 + i)
-          rg88[i] = it.masked ? 2 : maskTex.rg88 ? 1 : 0
-        } else {
-          gl.activeTexture(gl.TEXTURE1 + i)
-          gl.bindTexture(gl.TEXTURE_2D, white)
-          gl.uniform1i(loc.fxMask[i], 1 + i)
-          rg88[i] = 0
-        }
-      }
-      gl.uniform1iv(loc.fxType, types)
-      gl.uniform4fv(loc.fxP, params)
-      gl.uniform1fv(loc.fxRG88, rg88)
-      gl.drawArrays(gl.TRIANGLES, 0, 6)
-      drawn++
+      await renderLayer(layer, textures, cam, viewProj, width, height, time)
     }
     gl.bindVertexArray(null)
-    return drawn
   }
 
-  return { gl, render }
-}
+  async function renderLayer(layer, textures, cam, viewProj, width, height, time) {
+    const texObj = !layer.solid && layer.textureName ? textures.get(layer.textureName) : null
+    if (texObj && texObj.video) return
+    const srcTex = texObj && texObj.glTex ? texObj.glTex : whiteTex
+    const w = Math.max(1, texObj ? texObj.width : 1)
+    const h = Math.max(1, texObj ? texObj.height : 1)
+    const color4 = [layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness, layer.alpha]
+    const effects = (layer.effects || []).filter((e) => e.visible)
 
-export function makeTexture(gl, rgba, width, height, bitmap = null) {
-  const tex = gl.createTexture()
-  gl.bindTexture(gl.TEXTURE_2D, tex)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  if (bitmap) {
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap)
-  } else {
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba)
-  }
-  return tex
-}
-
-function effectUniforms(layer, time) {
-  const items = []
-  let tint = [0, 0, 0]
-  let tintAlpha = 0
-  let key = [0, 0, 0]
-  let fuzz = 0
-  let tol = -100
-  for (const e of layer.effects || []) {
-    if (!e.visible) continue
-    const pass = e.passes && e.passes[0]
-    const c = pass ? pass.constantshadervalues : {}
-    const combos = pass ? pass.combos : {}
-    if (e.file.endsWith('scroll/effect.json')) {
-      const sx = typeof c.speedx === 'number' ? c.speedx : 0
-      const sy = typeof c.speedy === 'number' ? c.speedy : 0
-      const repeat = c.repeat !== undefined ? vec2(c.repeat) : [1, 1]
-      items.push({ type: 'scroll', sx, sy, rx: repeat[0], ry: repeat[1] })
-    } else if (e.file.endsWith('shake/effect.json')) {
-      items.push({
-        type: 'shake',
-        mask: pass && pass.textures && pass.textures[1],
-        speed: typeof c.speed === 'number' ? c.speed : 1,
-        amp: typeof c.strength === 'number' ? c.strength : 0.1,
-        friction: c.friction !== undefined ? vec2(c.friction) : [1, 1],
-        bounds: c.bounds !== undefined ? vec2(c.bounds) : [0, 1],
-        direction: combos.DIRECTION || 0,
-      })
-    } else if (e.file.endsWith('waterwaves/effect.json')) {
-      items.push({
-        type: 'waves',
-        mask: pass && pass.textures && pass.textures[1],
-        speed: typeof c.speed === 'number' ? c.speed : 5,
-        scale: typeof c.scale === 'number' ? c.scale : 200,
-        strength: typeof c.strength === 'number' ? c.strength : 0.1,
-        direction: typeof c.direction === 'number' ? c.direction : 0,
-        perspective: typeof c.perspective === 'number' ? c.perspective : 0,
-      })
-    } else if (e.file.endsWith('waterflow/effect.json')) {
-      items.push({
-        type: 'flow',
-        mask: pass && pass.textures && pass.textures[1],
-        phase: pass && pass.textures && pass.textures[2],
-        speed: typeof c.speed === 'number' ? c.speed : 1,
-        strength: typeof c.strength === 'number' ? c.strength : 1,
-        phaseScale: typeof c.phasescale === 'number' ? c.phasescale : 2,
-      })
-    } else if (e.file.endsWith('foliagesway/effect.json')) {
-      items.push({
-        type: 'sway',
-        mask: pass && pass.textures && pass.textures[1],
-        masked: (pass && pass.combos && pass.combos.MASK) === 1,
-        strength: typeof c.strength === 'number' ? c.strength : 0.4,
-        speed: typeof c.speeduv === 'number' ? c.speeduv : 5,
-        direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
-        noiseScale: typeof c.scale === 'number' ? c.scale : 0.05,
-      })
-    } else if (e.file.endsWith('pulse/effect.json')) {
-      // 音频驱动脉冲（AUDIOPROCESSING）：无音频支持时跳过（WE 中无音频则 pulse=0）
-      if (pass && pass.combos && pass.combos.AUDIOPROCESSING) continue
-      // WebGL 渲染器暂未实现 pulse 颜色混合，跳过（保持与 CPU 一致的视觉）
-      continue
-    } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
-      tint = vec3(typeof c.color === 'string' ? c.color : c.color.value)
-      tintAlpha = typeof c.alpha === 'number' ? c.alpha : 1
-    } else if (e.file.endsWith('colorkey/effect.json') && c.color !== undefined) {
-      key = vec3(typeof c.color === 'string' ? c.color : c.color.value)
-      fuzz = typeof c.fuzziness === 'number' ? c.fuzziness : 0
-      tol = typeof c.tolerance === 'number' ? c.tolerance : 0.1
+    // 无效果：直接合成
+    if (effects.length === 0) {
+      compositeLayer(copyProg, srcTex, color4, layer, cam, viewProj, width, height)
+      return
     }
+
+    // copy pass → FBO A（乒乓 A/B 必须独立实例）
+    const fboA = getFBO(w, h, 'ping')
+    const fboB = getFBO(w, h, 'pong')
+    gl.useProgram(copyProg)
+    setBlend('normal')
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboA.fbo)
+    gl.viewport(0, 0, w, h)
+    gl.bindVertexArray(vao)
+    uploadQuad(layerQuadVerts(w, h))
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, srcTex)
+    gl.uniform1i(gl.getUniformLocation(copyProg, 'u_Tex'), 0)
+    gl.uniform4f(gl.getUniformLocation(copyProg, 'u_Color4'), color4[0], color4[1], color4[2], color4[3])
+    gl.uniformMatrix4fv(gl.getUniformLocation(copyProg, 'u_MVP'), false, mat4Ortho(0, w, 0, h, -10000, 10000))
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+
+    // 效果链
+    let curInput = fboA // 当前主 FBO（asInput）
+    let curDraw = fboB // 乒乓目标
+    const effectFBOs = new Map()
+    let inTargetSeq = false
+    let seqInput = fboA
+    const flatPasses = []
+    for (const eff of effects) {
+      for (const f of eff.fbos || []) {
+        if (!effectFBOs.has(f.name)) {
+          const scale = f.scale || 1
+          effectFBOs.set(f.name, getFBO(Math.max(1, Math.round(w / scale)), Math.max(1, Math.round(h / scale)), f.name))
+        }
+      }
+      const passes = eff.materialPasses || []
+      for (let pi = 0; pi < passes.length; pi++) {
+        flatPasses.push({ eff, mp: passes[pi], ov: eff.passes && eff.passes[pi] })
+      }
+    }
+    for (let fi = 0; fi < flatPasses.length; fi++) {
+      const { eff, mp, ov } = flatPasses[fi]
+      const combos = { ...(mp.combos || {}), ...((ov && ov.combos) || {}) }
+      // 本 pass 提供的纹理（material + scene override 合并，用于纹理关联 combo）
+      const mpT = mp.textures || []
+      const ovT = (ov && ov.textures) || []
+      const mergedTex = []
+      for (let i = 0; i < Math.max(mpT.length, ovT.length); i++) {
+        if (ovT[i] !== undefined && ovT[i] !== null) mergedTex[i] = ovT[i]
+        else mergedTex[i] = mpT[i] !== undefined ? mpT[i] : null
+      }
+      const progEntry = await getEffectProgram(mp.shader, combos, mergedTex)
+      const prog = progEntry.prog
+      const uni = progEntry.uni
+      // 目标与输入
+      let outFBO
+      let passInput
+      if (mp.target) {
+        if (!inTargetSeq) {
+          seqInput = curInput
+          inTargetSeq = true
+        }
+        outFBO = effectFBOs.get(mp.target) || curInput
+        passInput = seqInput
+      } else {
+        inTargetSeq = false
+        outFBO = curDraw
+        passInput = curInput
+      }
+      gl.useProgram(prog)
+      setBlend(mp.blending || 'normal')
+      gl.bindFramebuffer(gl.FRAMEBUFFER, outFBO.fbo)
+      gl.viewport(0, 0, outFBO.width, outFBO.height)
+      gl.bindVertexArray(vao)
+      uploadQuad(passQuadVerts())
+      // 纹理绑定
+      const texNames = mp.textures || []
+      const maxTex = Math.max(texNames.length, 8)
+      const resolutions = new Map()
+      const usedUnits = new Set()
+      for (let ti = 0; ti < maxTex; ti++) {
+        let name = ti < texNames.length ? texNames[ti] : null
+        if (ov && ov.textures && ov.textures[ti] !== undefined && ov.textures[ti] !== null) name = ov.textures[ti]
+        // binds 覆盖
+        for (const b of eff.binds || []) {
+          if (b.index === ti) name = b.name
+        }
+        // WE 语义：槽 0 为空 = 当前输入 FBO（asInput）；'previous' 同义
+        let entry
+        if (ti === 0 && (name === null || name === undefined || name === '')) {
+          entry = passInput
+        } else {
+          entry = resolveTextureName(name, passInput, effectFBOs, textures)
+        }
+        if (name === 'previous') entry = passInput
+        if (entry === null) entry = { glTex: whiteTex, width: 1, height: 1, tex: whiteTex }
+        const t = entry.fbo ? entry : { tex: entry.glTex || whiteTex, width: entry.width || 1, height: entry.height || 1 }
+        gl.activeTexture(gl.TEXTURE0 + ti)
+        gl.bindTexture(gl.TEXTURE_2D, t.tex)
+        usedUnits.add(ti)
+        resolutions.set(ti, [t.width, t.height, t.width, t.height])
+      }
+      // 系统 uniform
+      bindSystemUniforms(uni, layer, time, cam.projW, cam.projH, mat4Identity(), mat4Ortho(0, w, 0, h, -10000, 10000), mat4Identity(), resolutions)
+      // 常量（material 名 → uniform 映射）
+      bindConstants(uni, { ...(mp.constants || {}), ...((ov && ov.constantshadervalues) || {}) }, progEntry.matMeta)
+      gl.drawArrays(gl.TRIANGLES, 0, 6)
+      // 更新乒乓
+      if (!mp.target) {
+        const tmp = curDraw
+        curDraw = curInput
+        curInput = outFBO
+        void tmp
+      }
+    }
+    // 合成
+    compositeLayer(compProg, curInput.tex, [1, 1, 1, 1], layer, cam, viewProj, width, height)
   }
-  return { items, tint, tintAlpha, key, fuzz, tol }
+
+  return { gl, render: renderScene, getFBO, getEffectProgram, progCache, shaderResolver, whiteTex }
 }
 
 function linkProgram(gl, vsSrc, fsSrc) {
@@ -411,6 +504,8 @@ function linkProgram(gl, vsSrc, fsSrc) {
   const p = gl.createProgram()
   gl.attachShader(p, vs)
   gl.attachShader(p, fs)
+  gl.bindAttribLocation(p, 0, 'a_Position')
+  gl.bindAttribLocation(p, 1, 'a_TexCoord')
   gl.linkProgram(p)
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
     throw new Error('着色器链接失败: ' + gl.getProgramInfoLog(p))
@@ -428,12 +523,53 @@ function compile(gl, type, src) {
   return s
 }
 
-function vec3(s) {
+function parseVec3(s) {
   const p = String(s).trim().split(/\s+/).map(Number)
   return [p[0] || 0, p[1] || 0, p[2] || 0]
 }
 
-function vec2(s) {
-  const p = String(s).trim().split(/\s+/).map(Number)
-  return [p[0] || 0, p[1] || 0]
+export function makeTexture(gl, rgba, width, height, bitmap = null) {
+  const tex = gl.createTexture()
+  gl.bindTexture(gl.TEXTURE_2D, tex)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+  if (bitmap) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap)
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba)
+  }
+  return tex
+}
+
+export function makeTextureMip(gl, levels, rg88 = false) {
+  const tex = gl.createTexture()
+  gl.bindTexture(gl.TEXTURE_2D, tex)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, levels.length - 1)
+  const fmt = rg88 ? gl.RG : gl.RGBA
+  const ifmt = rg88 ? gl.RG8 : gl.RGBA
+  for (let i = 0; i < levels.length; i++) {
+    const lv = levels[i]
+    if (lv.bitmap) {
+      gl.texImage2D(gl.TEXTURE_2D, i, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, lv.bitmap)
+    } else if (rg88 && lv.rgba) {
+      // RGBA 解码（rgb=G, a=R）→ GL_RG 上传（原始 R,G；shader .r=原始R .g=原始G，与参考实现一致）
+      const n = lv.width * lv.height
+      const rg = new Uint8Array(n * 2)
+      for (let p = 0; p < n; p++) {
+        rg[p * 2] = lv.rgba[p * 4 + 3]
+        rg[p * 2 + 1] = lv.rgba[p * 4]
+      }
+      gl.texImage2D(gl.TEXTURE_2D, i, ifmt, lv.width, lv.height, 0, fmt, gl.UNSIGNED_BYTE, rg)
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, i, ifmt, lv.width, lv.height, 0, fmt, gl.UNSIGNED_BYTE, lv.rgba)
+    }
+  }
+  return tex
 }

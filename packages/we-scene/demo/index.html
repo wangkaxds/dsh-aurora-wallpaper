@@ -21,19 +21,25 @@
 <div id="wrap"><canvas id="cv" width="1920" height="1080"></canvas></div>
 <script type="module">
 import { parsePkg, getEntry } from '../src/pkg/container.js'
-import { parseTex, decodeMip0, FIF } from '../src/pkg/texture.js'
+import { parseTex, decodeMip0, decodeMips, FIF } from '../src/pkg/texture.js'
 import { parseScene, resolveMaterial } from '../src/scene/parse.js'
-import { createRenderer, makeTexture } from '../src/render/renderer.js'
+import { resolveEffectChain, BUILTIN_MODELS, BUILTIN_MATERIALS } from '../src/scene/effects-parse.js'
+import { createRenderer, makeTexture, makeTextureMip } from '../src/render/renderer.js'
 import { generateNoiseTexture } from '../src/render/noise.js'
 
 const cv = document.getElementById('cv')
 const status = document.getElementById('status')
-const renderer = createRenderer(cv)
-// 方向实验开关：URL 加 ?flip=1 翻转所有蒙版驱动位移的方向（shake/sway/waves/flow）
-if (new URLSearchParams(location.search).get('flip') === '1') globalThis.__WE_FLIP = true
-// 幅度缩放：URL 加 ?amp=0.5 等比缩放呼吸/摆动/抖动幅度
-const ampParam = new URLSearchParams(location.search).get('amp')
-if (ampParam !== null) globalThis.__WE_AMP = Number(ampParam)
+// shader 源解析：优先 pkg 内（场景自带版本），其次 WE 安装目录（运行时路由，不分发）
+function shaderResolver(rel) {
+  const inner = rel.startsWith('shaders/') ? rel : 'shaders/' + rel
+  const pkgEntry = pkg && getEntry(pkg, inner)
+  if (pkgEntry) return Promise.resolve(readText(pkgEntry))
+  const file = inner.slice('shaders/'.length)
+  return fetch('/we-assets/shaders/' + file, { cache: 'no-store' })
+    .then((r) => (r.ok ? r.text() : null))
+    .catch(() => null)
+}
+const renderer = createRenderer(cv, { shaderResolver })
 const utf8 = new TextDecoder()
 function readText(bytes) {
   return utf8.decode(bytes).replace(/^\uFEFF/, '')
@@ -75,13 +81,18 @@ async function rebuild() {
     textures = new Map()
     const white = { glTex: makeTexture(renderer.gl, new Uint8Array([255, 255, 255, 255]), 1, 1), width: 1, height: 1, rg88: false }
     textures.set('util/white', white)
+    // util/noflow：中性流向 0.498 灰 → flowMask=(0,0)
+    textures.set('util/noflow', { glTex: makeTexture(renderer.gl, new Uint8Array([127, 127, 127, 255]), 1, 1), width: 1, height: 1, rg88: false })
     // 优先使用壁纸引擎自带 util/noise（由本地服务器路由提供），失败回退合成噪声
-    let noiseEntry = { glTex: makeTexture(renderer.gl, generateNoiseTexture(), 256, 256), width: 256, height: 256, rg88: false }
+    let noiseEntry = { glTex: makeTexture(renderer.gl, generateNoiseTexture(), 256, 256), width: 256, height: 256, rg88: false, mips: null }
     try {
-      const resp = await fetch('/we-assets/noise.png', { cache: 'no-store' })
+      // 优先 WE 官方 util/noise.tex（带 mip 链，sway 等效果靠 mipmap 平滑位移场）
+      const resp = await fetch('/we-assets/noise.tex', { cache: 'no-store' })
       if (resp.ok) {
-        const bmp = await createImageBitmap(await resp.blob())
-        noiseEntry = { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height, rg88: false }
+        const buf = new Uint8Array(await resp.arrayBuffer())
+        const ntex = parseTex(buf)
+        const mips = decodeMips(ntex)
+        noiseEntry = { glTex: makeTextureMip(renderer.gl, mips), width: mips[0].width, height: mips[0].height, rg88: false, mips }
       }
     } catch (e) {
       // 回退合成噪声
@@ -105,7 +116,9 @@ async function rebuild() {
       } else if (m.image !== undefined) {
         return null
       } else {
-        entry = { glTex: makeTexture(renderer.gl, m.rgba, m.width, m.height), width: m.width, height: m.height, rg88 }
+        // .tex 纹理带 mip 链：全部上传（LINEAR_MIPMAP_LINEAR，与 WE 一致）
+        const mips = decodeMips(tex)
+        entry = { glTex: makeTextureMip(renderer.gl, mips), width: mips[0].width, height: mips[0].height, rg88, mips }
       }
       textures.set(name, entry)
       return entry
@@ -115,14 +128,25 @@ async function rebuild() {
       status.textContent = '加载对象 ' + (li + 1) + '/' + scene.layers.length + '：' + (layer.name || '?')
       if (!layer.image) continue
       try {
-        const modelEntry = getEntry(pkg, layer.image)
-        if (!modelEntry) continue
-        const model = JSON.parse(readText(modelEntry))
+        // 内置模型（models/util/*）直接映射；否则读 pkg
+        let model
+        if (BUILTIN_MODELS[layer.image]) {
+          model = BUILTIN_MODELS[layer.image]
+        } else {
+          const modelEntry = getEntry(pkg, layer.image)
+          if (!modelEntry) continue
+          model = JSON.parse(readText(modelEntry))
+        }
         const mat = resolveMaterial(model)
         if (!mat) continue
-        const matEntry = getEntry(pkg, mat.materialPath)
-        if (!matEntry) continue
-        const material = JSON.parse(readText(matEntry))
+        let material
+        if (BUILTIN_MATERIALS[mat.materialPath]) {
+          material = BUILTIN_MATERIALS[mat.materialPath]
+        } else {
+          const matEntry = getEntry(pkg, mat.materialPath)
+          if (!matEntry) continue
+          material = JSON.parse(readText(matEntry))
+        }
         const pass = material.passes && material.passes[0]
         const texName = pass && pass.textures && pass.textures[0]
         if (texName) {
@@ -133,6 +157,10 @@ async function rebuild() {
             layer.textureName = texName
             n++
           }
+        }
+        // 效果 material 链解析（effect.json → materials/effects/*.json）
+        for (const e of layer.effects || []) {
+          resolveEffectChain(pkg, e, readText)
         }
         // 效果引用纹理（shake 流动图 / waterwaves 蒙版）
         for (const e of layer.effects || []) {
@@ -148,7 +176,7 @@ async function rebuild() {
         throw new Error('图层 ' + (layer.name || li) + ' 加载失败: ' + (e && e.message))
       }
     }
-    status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（Phase 3：滚动/抖动/波纹）'
+    status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（通用 pass 管线）'
     startTime = performance.now()
   } catch (e) {
     status.textContent = '❌ 加载失败：' + (e && e.message) + '（控制台 F12 有详情）'
@@ -158,17 +186,16 @@ async function rebuild() {
 
 let renderErrorShown = false
 function frame(now) {
-  if (scene) {
-    try {
-      const t = (now - startTime) / 1000
-      renderer.render(scene, textures, cv.width, cv.height, t)
-    } catch (e) {
+  // 录制工具冻结开关：__weFreeze=true 时 RAF 不渲染（录制脚本自行控制帧）
+  if (scene && !window.__weFreeze) {
+    const t = (now - startTime) / 1000
+    renderer.render(scene, textures, cv.width, cv.height, t).catch((e) => {
       if (!renderErrorShown) {
         renderErrorShown = true
-        status.textContent = '❌ 渲染失败：' + (e && e.message)
+        status.textContent = '❌ 渲染失败：' + (e && e.message) + '（控制台 F12 有详情）'
         console.error(e)
       }
-    }
+    })
   }
   requestAnimationFrame(frame)
 }
