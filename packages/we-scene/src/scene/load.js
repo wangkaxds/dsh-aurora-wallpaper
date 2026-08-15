@@ -1,15 +1,26 @@
 // 场景资源加载：解析每个图层的 model→material→texture 链，产出纹理表
 import { getEntry } from '../pkg/container.js'
 import { parseTex, decodeMip0, FIF } from '../pkg/texture.js'
+import { generateNoiseTexture } from '../render/noise.js'
 import { resolveMaterial } from './parse.js'
 
 const WHITE = { width: 1, height: 1, rgba: new Uint8Array([255, 255, 255, 255]) }
+const NOISE = { width: 256, height: 256, rgba: generateNoiseTexture() }
 
-// pkg: parsePkg 结果；scene: parseScene 结果；opts.jpegDir: fif=2(JPEG) 纹理的预转 PNG 目录
+// pkg: parsePkg 结果；scene: parseScene 结果；opts.jpegDir: fif=2(JPEG) 纹理的预转 PNG 目录；opts.noisePng: 官方 util/noise 的 PNG 路径（可选，回退合成噪声）
 export function loadSceneAssets(pkg, scene, opts = {}, readFile = null) {
   const textures = new Map()
   textures.set('util/white', WHITE)
-  textures.set('util/noise', WHITE)
+  let noise = NOISE
+  if (opts.noisePng && readFile) {
+    try {
+      const d = decodePngNode(readFile(opts.noisePng))
+      noise = { width: d.width, height: d.height, rgba: d.rgba }
+    } catch (e) {
+      // 回退合成噪声
+    }
+  }
+  textures.set('util/noise', noise)
   let resolved = 0
   const log = []
 

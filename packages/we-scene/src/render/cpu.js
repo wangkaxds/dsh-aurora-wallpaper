@@ -69,6 +69,7 @@ function layerMatrix(layer) {
 function effectChain(layer) {
   const items = []
   const tints = []
+  const pulses = []
   const keys = []
   for (const e of layer.effects || []) {
     if (!e.visible) continue
@@ -100,8 +101,28 @@ function effectChain(layer) {
         direction: typeof c.direction === 'number' ? c.direction : 0,
         perspective: typeof c.perspective === 'number' ? c.perspective : 0,
       })
+    } else if (e.file.endsWith('foliagesway/effect.json')) {
+      items.push({
+        type: 'sway',
+        strength: typeof c.strength === 'number' ? c.strength : 0.4,
+        speed: typeof c.speeduv === 'number' ? c.speeduv : 5,
+        direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
+        phase: typeof c.phase === 'number' ? c.phase : 0.5,
+        power: typeof c.power === 'number' ? c.power : 1,
+        noiseScale: typeof c.scale === 'number' ? c.scale : 0.05,
+        ratio: typeof c.ratio === 'number' ? c.ratio : 0.3,
+      })
     } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tints.push({ color: vec3(typeof c.color === 'string' ? c.color : c.color.value), alpha: typeof c.alpha === 'number' ? c.alpha : 1 })
+    } else if (e.file.endsWith('pulse/effect.json')) {
+      pulses.push({
+        tintLow: c.tintlow !== undefined ? vec3(c.tintlow) : [1, 1, 1],
+        tintHigh: c.tinthigh !== undefined ? vec3(c.tinthigh) : [1, 1, 1],
+        speed: typeof c.speed === 'number' ? c.speed : 3,
+        phase: typeof c.phase === 'number' ? c.phase : 0,
+        amount: typeof c.amount === 'number' ? c.amount : 1,
+        bounds: c.bounds !== undefined ? vec2(c.bounds) : [0, 1],
+      })
     } else if (e.file.endsWith('colorkey/effect.json') && c.color !== undefined) {
       keys.push({
         key: vec3(typeof c.color === 'string' ? c.color : c.color.value),
@@ -110,7 +131,7 @@ function effectChain(layer) {
       })
     }
   }
-  return { items, tints, keys }
+  return { items, tints, pulses, keys }
 }
 
 function sample(tex, u, v) {
@@ -179,6 +200,26 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const s = Math.sin(dist) * (it.strength * it.strength + it.perspective * pos) * mask
           u += dir[1] * s
           v += -dir[0] * s
+        } else if (it.type === 'sway') {
+          const noise = textures.get('util/noise') || WHITE
+          const n = sample(noise, u * it.noiseScale, v * it.noiseScale)
+          const aspect = (tex.width / tex.height) * it.ratio
+          const zw = rotate2([1 / aspect, aspect], it.direction)
+          const params = rotate2([u, v], it.direction)
+          const amp = it.strength * it.strength * 0.005
+          const phase = (n[1] / 255 * Math.PI * 2 + params[0] * 10 + params[1] * 5) * it.phase
+          const sines = [1, -0.16161616, 0.0083333, -0.00019841].map((k) => {
+            const x = Math.sin(phase + it.speed * time * k)
+            return Math.pow(Math.abs(x), it.power) * Math.sign(x)
+          })
+          const csines = [-0.5, 0.041666666, -0.0013888889, 0.000024801587].map((k) => {
+            const x = Math.sin(0.4 + phase + it.speed * time * k)
+            return Math.pow(Math.abs(x), it.power) * Math.sign(x)
+          })
+          const sumA = sines[0] + sines[1] + sines[2] + sines[3]
+          const sumC = csines[0] + csines[1] + csines[2] + csines[3]
+          u += zw[0] * sumA * amp
+          v += zw[1] * sumC * amp
         }
       }
       const t = sample(tex, u, v)
@@ -190,6 +231,15 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
         r = r * (1 - tint.alpha) + tint.color[0] * tint.alpha
         g = g * (1 - tint.alpha) + tint.color[1] * tint.alpha
         b2 = b2 * (1 - tint.alpha) + tint.color[2] * tint.alpha
+      }
+      for (const pu of fx.pulses) {
+        const p = smoothstep(pu.bounds[0], pu.bounds[1], Math.sin(time * pu.speed + pu.phase) * 0.5 + 0.5) * pu.amount
+        const low = [r * pu.tintLow[0], g * pu.tintLow[1], b2 * pu.tintLow[2]]
+        const high = [r * pu.tintHigh[0], g * pu.tintHigh[1], b2 * pu.tintHigh[2]]
+        const sl = softlight(low, high)
+        r = low[0] * (1 - p) + sl[0] * p
+        g = low[1] * (1 - p) + sl[1] * p
+        b2 = low[2] * (1 - p) + sl[2] * p
       }
       for (const k of fx.keys) {
         const delta = Math.abs(k.key[0] - r) + Math.abs(k.key[1] - g) + Math.abs(k.key[2] - b2)
@@ -228,6 +278,22 @@ function rotate2(v, a) {
   const c = Math.cos(a)
   const s = Math.sin(a)
   return [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
+}
+
+// W3C soft-light 混合（近似 WE 图像混合模式 22）
+function softlight(base, blend) {
+  const out = [0, 0, 0]
+  for (let i = 0; i < 3; i++) {
+    const Cb = Math.min(1, Math.max(0, base[i]))
+    const Cs = Math.min(1, Math.max(0, blend[i]))
+    if (Cs <= 0.5) {
+      out[i] = Cb - (1 - 2 * Cs) * Cb * (1 - Cb)
+    } else {
+      const D = Cb <= 0.25 ? ((16 * Cb - 12) * Cb + 4) * Cb : Math.sqrt(Cb)
+      out[i] = Cb + (2 * Cs - 1) * (D - Cb)
+    }
+  }
+  return out
 }
 
 function vec3(s) {

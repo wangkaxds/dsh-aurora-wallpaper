@@ -25,6 +25,18 @@ createServer(async (req, res) => {
       res.end()
       return
     }
+    if (urlPath === '/we-assets/noise.png') {
+      // 运行时读取本机壁纸引擎自带噪声（不打包、不分发）
+      try {
+        const data = await readFile('D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\materials\\util\\noise.png')
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' })
+        res.end(data)
+      } catch (e) {
+        res.writeHead(404)
+        res.end('noise not found')
+      }
+      return
+    }
     let rel = urlPath.replace(/^\/+/, '') || 'demo/index.html'
     if (rel.endsWith('/')) rel += 'index.html'
     const file = join(root, rel)

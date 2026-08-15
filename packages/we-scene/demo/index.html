@@ -24,6 +24,7 @@ import { parsePkg, getEntry } from '../src/pkg/container.js'
 import { parseTex, decodeMip0, FIF } from '../src/pkg/texture.js'
 import { parseScene, resolveMaterial } from '../src/scene/parse.js'
 import { createRenderer, makeTexture } from '../src/render/renderer.js'
+import { generateNoiseTexture } from '../src/render/noise.js'
 
 const cv = document.getElementById('cv')
 const status = document.getElementById('status')
@@ -69,7 +70,18 @@ async function rebuild() {
     textures = new Map()
     const white = { glTex: makeTexture(renderer.gl, new Uint8Array([255, 255, 255, 255]), 1, 1), width: 1, height: 1, rg88: false }
     textures.set('util/white', white)
-    textures.set('util/noise', white)
+    // 优先使用壁纸引擎自带 util/noise（由本地服务器路由提供），失败回退合成噪声
+    let noiseEntry = { glTex: makeTexture(renderer.gl, generateNoiseTexture(), 256, 256), width: 256, height: 256, rg88: false }
+    try {
+      const resp = await fetch('/we-assets/noise.png', { cache: 'no-store' })
+      if (resp.ok) {
+        const bmp = await createImageBitmap(await resp.blob())
+        noiseEntry = { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height, rg88: false }
+      }
+    } catch (e) {
+      // 回退合成噪声
+    }
+    textures.set('util/noise', noiseEntry)
     let n = 0
     async function loadTex(name) {
       if (textures.has(name)) return textures.get(name)

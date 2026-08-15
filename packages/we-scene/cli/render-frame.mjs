@@ -22,7 +22,8 @@ const sceneJson = JSON.parse(getEntry(pkg, 'scene.json').toString('utf8').replac
 const project = JSON.parse(readFileSync(projectPath, 'utf8').replace(/^\uFEFF/, ''))
 const scene = parseScene(sceneJson, project)
 
-const { textures, resolved, log } = loadSceneAssets(pkg, scene, { jpegDir }, readFileSync)
+const WE_NOISE = 'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\materials\\util\\noise.png'
+const { textures, resolved, log } = loadSceneAssets(pkg, scene, { jpegDir, noisePng: WE_NOISE }, readFileSync)
 for (const line of log) console.log(line)
 
 const W = 1920
@@ -37,3 +38,5 @@ const px = (x, y) => {
 }
 console.log('中心(960,540):', px(960, 540), ' 横条带(960,300):', px(960, 300), ' 竖条带(300,800):', px(300, 800))
 console.log('右上(1700,100):', px(1700, 100), ' 角(5,5):', px(5, 5))
+console.log('over1(960,458):', px(960, 458), ' (960,622):', px(960, 622))
+console.log('右边框(1910,290):', px(1910, 290), ' (1910,790):', px(1910, 790))
