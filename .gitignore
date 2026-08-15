@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+
+# 本地视频、壁纸与运行时数据（绝不入库）
+*.mp4
+*.webp
+*.webm
+*.gif
+manifest.json
+state.json
+aurora-video/
+wallpapers/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 日志
+*.log

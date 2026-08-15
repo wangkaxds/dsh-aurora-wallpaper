@@ -1,0 +1,17 @@
+{
+  "name": "dsh-aurora-wallpaper",
+  "version": "0.1.0",
+  "description": "Wallpaper Engine 壁纸作为 DeepSeek Harness 网页界面的动态背景（动态 Cordis 插件）",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "wallpaper-engine",
+    "live-wallpaper",
+    "background"
+  ],
+  "files": [
+    "src"
+  ]
+}
