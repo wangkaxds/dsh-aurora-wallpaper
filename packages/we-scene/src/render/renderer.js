@@ -43,6 +43,23 @@ function buildFragSource() {
       float dist${i} = u_Time * u_FxP[${i}].x + dot(uv, dir${i}) * u_FxP[${i}].y;
       float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z) * mask${i};
       uv += vec2(dir${i}.y, -dir${i}.x) * s${i};
+    } else if (ty${i} == 3) {
+      vec4 n${i} = texture(u_Noise, uv * u_FxP[${i}].z);
+      float aspect${i} = u_FbSize.x / u_FbSize.y * 0.3;
+      vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w);
+      vec2 pa${i} = rot2(uv, u_FxP[${i}].w);
+      float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005;
+      amp${i} *= texture(u_FxMask[${i}], uv).r;
+      float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
+      float sA${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 1.0);
+      float sB${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.16161616);
+      float sC${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 0.0083333);
+      float sD${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.00019841);
+      float cA${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * -0.5);
+      float cB${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * 0.041666666);
+      float cC${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * -0.0013888889);
+      float cD${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * 0.000024801587);
+      uv += vec2(zw${i}.x * (sA${i} + sB${i} + sC${i} + sD${i}) * amp${i}, zw${i}.y * (cA${i} + cB${i} + cC${i} + cD${i}) * amp${i});
     }
   }`)
   }
@@ -59,13 +76,20 @@ uniform float u_KeyFuzz;
 uniform float u_KeyTol;
 uniform float u_Time;
 uniform int u_FxCount;
-uniform int u_FxType[8];   // 0=scroll 1=shake 2=waves
-uniform vec4 u_FxP[8];     // scroll:(sx,sy,rx,ry) shake:(speed,amp,fx,fy) waves:(speed,scale,strength,direction)
+uniform int u_FxType[8];   // 0=scroll 1=shake 2=waves 3=sway
+uniform vec4 u_FxP[8];     // scroll:(sx,sy,rx,ry) shake:(speed,amp,fx,fy) waves:(speed,scale,strength,direction) sway:(speed,strength,noiseScale,direction)
 uniform sampler2D u_FxMask[8];
 uniform float u_FxRG88[8];
+uniform sampler2D u_Noise;
+uniform vec2 u_FbSize;
 out vec4 fragColor;
 
 float fx_frac(float x) { return x - floor(x); }
+vec2 rot2(vec2 v, float a) {
+  float c = cos(a);
+  float s = sin(a);
+  return vec2(v.x * c - v.y * s, v.x * s + v.y * c);
+}
 
 void main() {
   vec2 uv = v_UV;
@@ -118,6 +142,8 @@ export function createRenderer(canvas) {
     fxP: gl.getUniformLocation(program, 'u_FxP[0]'),
     fxMask: new Array(MAX_FX).fill(0).map((_, i) => gl.getUniformLocation(program, 'u_FxMask[' + i + ']')),
     fxRG88: gl.getUniformLocation(program, 'u_FxRG88[0]'),
+    noise: gl.getUniformLocation(program, 'u_Noise'),
+    fbSize: gl.getUniformLocation(program, 'u_FbSize'),
     aPos: gl.getAttribLocation(program, 'a_Position'),
     aUv: gl.getAttribLocation(program, 'a_TexCoord'),
   }
@@ -165,6 +191,7 @@ export function createRenderer(canvas) {
     for (const layer of scene.layers) {
       if (!layer.visible || layer.particle) continue
       const texObj = layer.solid || !layer.textureName ? null : textures.get(layer.textureName)
+      if (texObj && texObj.video) continue // 视频纹理图层：Phase 4 支持播放
       const tex = texObj && texObj.glTex ? texObj.glTex : white
       const a = ALIGN[layer.alignment] || [0.5, 0.5]
       const w = layer.size[0] * layer.scale[0]
@@ -180,6 +207,12 @@ export function createRenderer(canvas) {
       gl.uniform3f(loc.color, layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness)
       gl.uniform1f(loc.alpha, layer.alpha)
       gl.uniform1f(loc.time, time)
+      // 全局噪声（util/noise）绑定到 9 号纹理单元
+      const noiseTex = textures.get('util/noise')
+      gl.activeTexture(gl.TEXTURE9)
+      gl.bindTexture(gl.TEXTURE_2D, noiseTex && noiseTex.glTex ? noiseTex.glTex : white)
+      gl.uniform1i(loc.noise, 9)
+      gl.uniform2f(loc.fbSize, texObj ? texObj.width : 1, texObj ? texObj.height : 1)
       const fx = effectUniforms(layer, time)
       gl.uniform3f(loc.tint, fx.tint[0], fx.tint[1], fx.tint[2])
       gl.uniform1f(loc.tintAlpha, fx.tintAlpha)
@@ -193,7 +226,7 @@ export function createRenderer(canvas) {
       gl.uniform1i(loc.fxCount, count)
       for (let i = 0; i < count; i++) {
         const it = fx.items[i]
-        types[i] = it.type === 'scroll' ? 0 : it.type === 'shake' ? 1 : 2
+        types[i] = it.type === 'scroll' ? 0 : it.type === 'shake' ? 1 : it.type === 'waves' ? 2 : 3
         if (it.type === 'scroll') {
           params[i * 4] = it.sx
           params[i * 4 + 1] = it.sy
@@ -204,10 +237,15 @@ export function createRenderer(canvas) {
           params[i * 4 + 1] = it.amp
           params[i * 4 + 2] = it.friction[0]
           params[i * 4 + 3] = it.friction[1]
-        } else {
+        } else if (it.type === 'waves') {
           params[i * 4] = it.speed
           params[i * 4 + 1] = it.scale
           params[i * 4 + 2] = it.strength
+          params[i * 4 + 3] = it.direction
+        } else {
+          params[i * 4] = it.speed
+          params[i * 4 + 1] = it.strength
+          params[i * 4 + 2] = it.noiseScale
           params[i * 4 + 3] = it.direction
         }
         const maskTex = it.mask ? textures.get(it.mask) || null : null
@@ -287,6 +325,15 @@ function effectUniforms(layer, time) {
         strength: typeof c.strength === 'number' ? c.strength : 0.1,
         direction: typeof c.direction === 'number' ? c.direction : 0,
         perspective: typeof c.perspective === 'number' ? c.perspective : 0,
+      })
+    } else if (e.file.endsWith('foliagesway/effect.json')) {
+      items.push({
+        type: 'sway',
+        mask: pass && pass.textures && pass.textures[1],
+        strength: typeof c.strength === 'number' ? c.strength : 0.4,
+        speed: typeof c.speeduv === 'number' ? c.speeduv : 5,
+        direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
+        noiseScale: typeof c.scale === 'number' ? c.scale : 0.05,
       })
     } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tint = vec3(typeof c.color === 'string' ? c.color : c.color.value)

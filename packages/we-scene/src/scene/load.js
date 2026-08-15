@@ -31,7 +31,10 @@ export function loadSceneAssets(pkg, scene, opts = {}, readFile = null) {
     const tex = parseTex(texEntry)
     const m = decodeMip0(tex)
     let entry = null
-    if (m.png !== undefined) {
+    if (m.video !== undefined) {
+      // 视频纹理：Phase 4 支持播放，当前标记为 video 供渲染器跳过
+      entry = { video: true, width: m.width, height: m.height, rgba: null }
+    } else if (m.png !== undefined) {
       const d = decodePngNode(m.png)
       entry = { width: d.width, height: d.height, rgba: d.rgba, rg88: tex.format === 8 }
     } else if (m.image !== undefined) {

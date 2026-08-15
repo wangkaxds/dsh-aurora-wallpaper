@@ -34,6 +34,7 @@ export function renderScene(scene, textures, width, height, time = 0) {
   for (const layer of scene.layers) {
     if (!layer.visible || layer.particle) continue
     const tex = layer.solid ? WHITE : textures.get(layer.textureName) || WHITE
+    if (tex.video) continue // 视频纹理图层：Phase 4 支持播放
     const quad = layerQuad(layer)
     const mvp = mat4Multiply(viewProj, layerMatrix(layer))
     // quad = [左, 右, 上, 下]；角点 = (x对, y对) 组合：TL, TR, BR, BL
@@ -104,6 +105,7 @@ function effectChain(layer) {
     } else if (e.file.endsWith('foliagesway/effect.json')) {
       items.push({
         type: 'sway',
+        mask: pass && pass.textures && pass.textures[1],
         strength: typeof c.strength === 'number' ? c.strength : 0.4,
         speed: typeof c.speeduv === 'number' ? c.speeduv : 5,
         direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
@@ -206,7 +208,13 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const aspect = (tex.width / tex.height) * it.ratio
           const zw = rotate2([1 / aspect, aspect], it.direction)
           const params = rotate2([u, v], it.direction)
-          const amp = it.strength * it.strength * 0.005
+          let amp = it.strength * it.strength * 0.005
+          // 摆动蒙版（WE 中提供了蒙版纹理即启用 MASK 组合，限制摆动区域）
+          const swayMask = textures.get(it.mask)
+          if (swayMask) {
+            const mf = sample(swayMask, u, v)
+            amp *= swayMask.rg88 ? mf[3] / 255 : mf[0] / 255
+          }
           const phase = (n[1] / 255 * Math.PI * 2 + params[0] * 10 + params[1] * 5) * it.phase
           const sines = [1, -0.16161616, 0.0083333, -0.00019841].map((k) => {
             const x = Math.sin(phase + it.speed * time * k)
