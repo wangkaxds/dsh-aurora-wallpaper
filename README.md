@@ -33,7 +33,7 @@
 
 ## 📦 可独立复用的核心：`packages/we-scene`
 
-整个场景渲染引擎是**独立 ES 模块**，不依赖 Harness 也能单独使用：
+整个场景渲染引擎是**独立 ES 模块**，不依赖 Harness 也能单独使用，**已单独开源为 [wangkaxds/we-scene](https://github.com/wangkaxds/we-scene)**：
 
 - `src/pkg/` — scene.pkg 容器解析（PKGV 格式）、TEX 纹理解码（ARGB8888/RGB888/RGB565/DXT1/3/5/RG88/R8/LZ4）、视频容器
 - `src/render/hlsl2glsl.js` — **HLSL→GLSL 转译器**（预处理 + combo 展开 + 类型转换，开箱即用）
