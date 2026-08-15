@@ -23,9 +23,9 @@ function buildFragSource() {
     if (ty${i} == 0) {
       float ox${i} = sign(u_FxP[${i}].x) * u_FxP[${i}].x * u_FxP[${i}].x * u_Time;
       float oy${i} = sign(u_FxP[${i}].y) * u_FxP[${i}].y * u_FxP[${i}].y * u_Time;
-      uv = vec2(fx_frac((uv.x + ox${i}) * u_FxP[${i}].z), fx_frac((uv.y + oy${i}) * u_FxP[${i}].w));
+      uv = vec2(fx_frac((uv0.x + ox${i}) * u_FxP[${i}].z), fx_frac((uv0.y + oy${i}) * u_FxP[${i}].w));
     } else if (ty${i} == 1) {
-      vec4 f${i} = texture(u_FxMask[${i}], uv);
+      vec4 f${i} = texture(u_FxMask[${i}], uv0);
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
       vec2 flowMask${i} = (flow${i} - vec2(0.498)) * 2.0;
       // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
@@ -37,20 +37,20 @@ function buildFragSource() {
       float amp2${i} = u_FxP[${i}].y * u_FxP[${i}].y;
       uv += off${i} * amp2${i} * flowMask${i};
     } else if (ty${i} == 2) {
-      vec4 f${i} = texture(u_FxMask[${i}], uv);
+      vec4 f${i} = texture(u_FxMask[${i}], uv0);
       float mask${i} = u_FxRG88[${i}] > 0.5 ? f${i}.a : f${i}.r;
       vec2 dir${i} = vec2(-sin(u_FxP[${i}].w), cos(u_FxP[${i}].w));
-      float pos${i} = abs(dot(uv - vec2(0.5), dir${i}));
-      float dist${i} = u_Time * u_FxP[${i}].x + dot(uv, dir${i}) * u_FxP[${i}].y;
+      float pos${i} = abs(dot(uv0 - vec2(0.5), dir${i}));
+      float dist${i} = u_Time * u_FxP[${i}].x + dot(uv0, dir${i}) * u_FxP[${i}].y;
       float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z) * mask${i};
       uv += vec2(dir${i}.y, -dir${i}.x) * s${i};
     } else if (ty${i} == 3) {
-      vec4 n${i} = texture(u_Noise, uv * u_FxP[${i}].z);
+      vec4 n${i} = texture(u_Noise, uv0 * u_FxP[${i}].z);
       float aspect${i} = u_FbSize.x / u_FbSize.y * 0.3;
       vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w);
-      vec2 pa${i} = rot2(uv, u_FxP[${i}].w);
+      vec2 pa${i} = rot2(uv0, u_FxP[${i}].w);
       float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005;
-      amp${i} *= texture(u_FxMask[${i}], uv).r;
+      amp${i} *= texture(u_FxMask[${i}], uv0).r;
       float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
       float sA${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 1.0);
       float sB${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.16161616);
@@ -65,11 +65,11 @@ function buildFragSource() {
   }`)
     flowBlocks.push(`
   if (${i} < u_FxCount && u_FxType[${i}] == 4) {
-      vec4 f${i} = texture(u_FxMask[${i}], uv);
+      vec4 f${i} = texture(u_FxMask[${i}], uv0);
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
       flow${i} = (flow${i} - vec2(0.498)) * 2.0;
       float amount${i} = min(1.0, length(flow${i}));
-      float phR${i} = smoothstep(0.2, 0.8, texture(u_Aux, uv * u_FxP[${i}].z).r);
+      float phR${i} = smoothstep(0.2, 0.8, texture(u_Aux, uv0 * u_FxP[${i}].z).r);
       float amp${i} = u_FxP[${i}].y * 0.1;
       float cx${i} = fx_frac(u_Time * u_FxP[${i}].x);
       float tv${i} = cx${i} < 0.5 ? cx${i} * 2.0 - 0.5 : 1.5 - cx${i} * 2.0;
@@ -109,6 +109,7 @@ vec2 rot2(vec2 v, float a) {
 }
 
 void main() {
+  vec2 uv0 = v_UV;
   vec2 uv = v_UV;
 ${dispBlocks.join('')}
   vec4 t = texture(u_Tex, uv);

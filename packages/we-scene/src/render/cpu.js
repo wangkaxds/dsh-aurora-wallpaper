@@ -180,18 +180,19 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
       if (w0 < 0 || w1 < 0 || w2 < 0) continue
       const u0 = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0]
       const v0 = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1]
-      // 位移类效果：按效果链顺序逐级修改采样 uv
-      let u = u0
-      let v = v0
+      // 位移类效果：WE 各效果 = 独立滤镜层，其输入（噪声/蒙版/流向/相位）一律采样自原始 uv，
+      // 位移只累加到最终采样坐标（不链式污染下一个效果的输入）
+      let su = u0
+      let sv = v0
       for (const it of fx.items) {
         if (it.type === 'scroll') {
           const ox = Math.sign(it.sx) * it.sx * it.sx * time
           const oy = Math.sign(it.sy) * it.sy * it.sy * time
-          u = frac((u + ox) * it.rx)
-          v = frac((v + oy) * it.ry)
+          su = frac((u0 + ox) * it.rx)
+          sv = frac((v0 + oy) * it.ry)
         } else if (it.type === 'shake') {
           const m = textures.get(it.mask) || WHITE
-          const f = sample(m, u, v)
+          const f = sample(m, u0, v0)
           const flow = m.rg88 ? [f[3] / 255, f[0] / 255] : [f[0] / 255, f[1] / 255]
           const flowMask = [(flow[0] - 0.498) * 2, (flow[1] - 0.498) * 2]
           // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
@@ -202,30 +203,30 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           off = Math.min(1, Math.max(0, (off - it.bounds[0]) * (1 / (it.bounds[1] - it.bounds[0]))))
           off = off * 2 - 1
           const amp2 = it.amp * it.amp
-          u += off * amp2 * flowMask[0]
-          v += off * amp2 * flowMask[1]
+          su += off * amp2 * flowMask[0]
+          sv += off * amp2 * flowMask[1]
         } else if (it.type === 'waves') {
           const m = textures.get(it.mask) || WHITE
-          const f = sample(m, u, v)
+          const f = sample(m, u0, v0)
           const mask = m.rg88 ? f[3] / 255 : f[0] / 255
           const dir = rotate2([0, 1], it.direction)
-          const pos = Math.abs((u - 0.5) * dir[0] + (v - 0.5) * dir[1])
-          const dist = time * it.speed + (u * dir[0] + v * dir[1]) * (it.scale + it.perspective * pos)
+          const pos = Math.abs((u0 - 0.5) * dir[0] + (v0 - 0.5) * dir[1])
+          const dist = time * it.speed + (u0 * dir[0] + v0 * dir[1]) * (it.scale + it.perspective * pos)
           const s = Math.sin(dist) * (it.strength * it.strength + it.perspective * pos) * mask
-          u += dir[1] * s
-          v += -dir[0] * s
+          su += dir[1] * s
+          sv += -dir[0] * s
         } else if (it.type === 'sway') {
           const noise = textures.get('util/noise') || WHITE
-          const n = sample(noise, u * it.noiseScale, v * it.noiseScale)
+          const n = sample(noise, u0 * it.noiseScale, v0 * it.noiseScale)
           const aspect = (tex.width / tex.height) * it.ratio
           const zw = rotate2([1 / aspect, aspect], it.direction)
-          const params = rotate2([u, v], it.direction)
+          const params = rotate2([u0, v0], it.direction)
           let amp = it.strength * it.strength * 0.005
           // 摆动蒙版：pass 提供了蒙版纹理即启用（WE 编辑器行为），限制摆动区域
           if (it.mask) {
             const swayMask = textures.get(it.mask)
             if (swayMask) {
-              const mf = sample(swayMask, u, v)
+              const mf = sample(swayMask, u0, v0)
               amp *= swayMask.rg88 ? mf[3] / 255 : mf[0] / 255
             }
           }
@@ -240,33 +241,31 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           })
           const sumA = sines[0] + sines[1] + sines[2] + sines[3]
           const sumC = csines[0] + csines[1] + csines[2] + csines[3]
-          u += zw[0] * sumA * amp
-          v += zw[1] * sumC * amp
+          su += zw[0] * sumA * amp
+          sv += zw[1] * sumC * amp
         }
       }
-      const t0 = sample(tex, u, v)
+      const t0 = sample(tex, su, sv)
       let t = t0
-      // waterflow：对已采样结果做流向混合（颜色阶段，按效果顺序执行）
-      // WE 语义：flowPhase = 相位纹理在 uv×phaseScale 处的常量（phasescale=1e7 → 角点 0.51 → 混合比 0.52），
-      // 两个镜像偏移采样按该比例混合 → 残余运动极小（≈原公式 4%），且三角波无周期跳变
+      // waterflow：蒙版/相位采样自原始 uv；镜像取样在累积位移后的坐标
       for (const it of fx.items) {
         if (it.type !== 'flow') continue
         const m = textures.get(it.mask) || WHITE
-        const f = sample(m, u, v)
+        const f = sample(m, u0, v0)
         const flow = m.rg88 ? [f[3] / 255, f[0] / 255] : [f[0] / 255, f[1] / 255]
         const mx = (flow[0] - 0.498) * 2
         const my = (flow[1] - 0.498) * 2
         const amount = Math.min(1, Math.hypot(mx, my))
         const phaseTex = textures.get(it.phase) || WHITE
-        const pf = sample(phaseTex, u * it.phaseScale, v * it.phaseScale)
+        const pf = sample(phaseTex, u0 * it.phaseScale, v0 * it.phaseScale)
         const phRatio = smoothstep(0.2, 0.8, pf[0] / 255)
         const amp = it.strength * 0.1
         const xw = frac(time * it.speed)
         const tv = xw < 0.5 ? xw * 2 - 0.5 : 1.5 - xw * 2
         const ox = mx * amp * tv
         const oy = my * amp * tv
-        const fa = sample(tex, u + ox, v + oy)
-        const fb = sample(tex, u - ox, v - oy)
+        const fa = sample(tex, su + ox, sv + oy)
+        const fb = sample(tex, su - ox, sv - oy)
         const fM = mix4(fa, fb, phRatio)
         t = mix4(t, fM, amount)
       }
