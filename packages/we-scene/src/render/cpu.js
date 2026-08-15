@@ -149,14 +149,26 @@ function effectChain(layer) {
 }
 
 function sample(tex, u, v) {
-  let x = Math.floor(u * tex.width)
-  let y = Math.floor(v * tex.height)
-  if (x < 0) x = 0
-  if (x >= tex.width) x = tex.width - 1
-  if (y < 0) y = 0
-  if (y >= tex.height) y = tex.height - 1
-  const o = (y * tex.width + x) * 4
-  return [tex.rgba[o], tex.rgba[o + 1], tex.rgba[o + 2], tex.rgba[o + 3]]
+  // 双线性过滤（与 WE 纹理线性过滤一致；噪声/流向等高频纹理依赖平滑相位）
+  const x = u * tex.width - 0.5
+  const y = v * tex.height - 0.5
+  const x0 = Math.floor(x)
+  const y0 = Math.floor(y)
+  const fx = x - x0
+  const fy = y - y0
+  const cx = (xi) => (xi < 0 ? 0 : xi >= tex.width ? tex.width - 1 : xi)
+  const cy = (yi) => (yi < 0 ? 0 : yi >= tex.height ? tex.height - 1 : yi)
+  const o00 = (cy(y0) * tex.width + cx(x0)) * 4
+  const o10 = (cy(y0) * tex.width + cx(x0 + 1)) * 4
+  const o01 = (cy(y0 + 1) * tex.width + cx(x0)) * 4
+  const o11 = (cy(y0 + 1) * tex.width + cx(x0 + 1)) * 4
+  const out = [0, 0, 0, 0]
+  for (let c = 0; c < 4; c++) {
+    const a = tex.rgba[o00 + c] * (1 - fx) + tex.rgba[o10 + c] * fx
+    const b = tex.rgba[o01 + c] * (1 - fx) + tex.rgba[o11 + c] * fx
+    out[c] = a * (1 - fy) + b * fy
+  }
+  return out
 }
 
 function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textures) {
