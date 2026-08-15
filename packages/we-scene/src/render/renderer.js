@@ -50,9 +50,7 @@ function buildFragSource() {
       vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w);
       vec2 pa${i} = rot2(uv, u_FxP[${i}].w);
       float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005;
-      if (u_FxRG88[${i}] > 1.5) {
-        amp${i} *= texture(u_FxMask[${i}], uv).r;
-      }
+      amp${i} *= texture(u_FxMask[${i}], uv).r;
       float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
       float sA${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 1.0);
       float sB${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.16161616);
@@ -71,11 +69,14 @@ function buildFragSource() {
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
       flow${i} = (flow${i} - vec2(0.498)) * 2.0;
       float amount${i} = min(1.0, length(flow${i}));
+      float phR${i} = smoothstep(0.2, 0.8, texture(u_Aux, uv * u_FxP[${i}].z).r);
       float amp${i} = u_FxP[${i}].y * 0.1;
       float cx${i} = fx_frac(u_Time * u_FxP[${i}].x);
-      float v${i} = cx${i} < 0.5 ? cx${i} * 2.0 - 0.5 : 1.5 - cx${i} * 2.0;
-      vec4 fs${i} = texture(u_Tex, uv + flow${i} * (amp${i} * v${i}));
-      t = mix(t, fs${i}, amount${i});
+      float tv${i} = cx${i} < 0.5 ? cx${i} * 2.0 - 0.5 : 1.5 - cx${i} * 2.0;
+      vec2 off${i} = flow${i} * (amp${i} * tv${i});
+      vec4 fa${i} = texture(u_Tex, uv + off${i});
+      vec4 fb${i} = texture(u_Tex, uv - off${i});
+      t = mix(t, mix(fa${i}, fb${i}, phR${i}), amount${i});
   }`)
   }
   return `#version 300 es
@@ -374,6 +375,11 @@ function effectUniforms(layer, time) {
         direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
         noiseScale: typeof c.scale === 'number' ? c.scale : 0.05,
       })
+    } else if (e.file.endsWith('pulse/effect.json')) {
+      // 音频驱动脉冲（AUDIOPROCESSING）：无音频支持时跳过（WE 中无音频则 pulse=0）
+      if (pass && pass.combos && pass.combos.AUDIOPROCESSING) continue
+      // WebGL 渲染器暂未实现 pulse 颜色混合，跳过（保持与 CPU 一致的视觉）
+      continue
     } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tint = vec3(typeof c.color === 'string' ? c.color : c.color.value)
       tintAlpha = typeof c.alpha === 'number' ? c.alpha : 1

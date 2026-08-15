@@ -127,6 +127,8 @@ function effectChain(layer) {
     } else if (e.file.endsWith('tint/effect.json') && c.color !== undefined) {
       tints.push({ color: vec3(typeof c.color === 'string' ? c.color : c.color.value), alpha: typeof c.alpha === 'number' ? c.alpha : 1 })
     } else if (e.file.endsWith('pulse/effect.json')) {
+      // 音频驱动脉冲（AUDIOPROCESSING）：无音频支持时跳过（WE 中无音频则 pulse=0）
+      if (pass && pass.combos && pass.combos.AUDIOPROCESSING) continue
       pulses.push({
         tintLow: c.tintlow !== undefined ? vec3(c.tintlow) : [1, 1, 1],
         tintHigh: c.tinthigh !== undefined ? vec3(c.tinthigh) : [1, 1, 1],
@@ -219,8 +221,8 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const zw = rotate2([1 / aspect, aspect], it.direction)
           const params = rotate2([u, v], it.direction)
           let amp = it.strength * it.strength * 0.005
-          // 场景 pass 无 MASK 组合时整层摆动（与 WE 行为一致）；显式 MASK=1 才用蒙版
-          if (it.masked) {
+          // 摆动蒙版：pass 提供了蒙版纹理即启用（WE 编辑器行为），限制摆动区域
+          if (it.mask) {
             const swayMask = textures.get(it.mask)
             if (swayMask) {
               const mf = sample(swayMask, u, v)
@@ -245,6 +247,8 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
       const t0 = sample(tex, u, v)
       let t = t0
       // waterflow：对已采样结果做流向混合（颜色阶段，按效果顺序执行）
+      // WE 语义：flowPhase = 相位纹理在 uv×phaseScale 处的常量（phasescale=1e7 → 角点 0.51 → 混合比 0.52），
+      // 两个镜像偏移采样按该比例混合 → 残余运动极小（≈原公式 4%），且三角波无周期跳变
       for (const it of fx.items) {
         if (it.type !== 'flow') continue
         const m = textures.get(it.mask) || WHITE
@@ -253,12 +257,18 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
         const mx = (flow[0] - 0.498) * 2
         const my = (flow[1] - 0.498) * 2
         const amount = Math.min(1, Math.hypot(mx, my))
+        const phaseTex = textures.get(it.phase) || WHITE
+        const pf = sample(phaseTex, u * it.phaseScale, v * it.phaseScale)
+        const phRatio = smoothstep(0.2, 0.8, pf[0] / 255)
         const amp = it.strength * 0.1
-        // 无缝三角波往返（原公式 frac 周期在整数处跳变 → 改为平滑往返，幅度/速度一致）
         const xw = frac(time * it.speed)
         const tv = xw < 0.5 ? xw * 2 - 0.5 : 1.5 - xw * 2
-        const fs = sample(tex, u + mx * amp * tv, v + my * amp * tv)
-        t = mix4(t, fs, amount)
+        const ox = mx * amp * tv
+        const oy = my * amp * tv
+        const fa = sample(tex, u + ox, v + oy)
+        const fb = sample(tex, u - ox, v - oy)
+        const fM = mix4(fa, fb, phRatio)
+        t = mix4(t, fM, amount)
       }
       let r = t[0] / 255 * layer.color[0] * layer.brightness
       let g = t[1] / 255 * layer.color[1] * layer.brightness
