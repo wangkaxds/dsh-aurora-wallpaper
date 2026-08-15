@@ -28,6 +28,12 @@ import { createRenderer, makeTexture } from '../src/render/renderer.js'
 const cv = document.getElementById('cv')
 const status = document.getElementById('status')
 const renderer = createRenderer(cv)
+const utf8 = new TextDecoder()
+function readText(bytes) {
+  return utf8.decode(bytes).replace(/^\uFEFF/, '')
+}
+// 自动化测试钩子（无副作用，供 CDP 验证用）
+window.__weScene = { renderer, getScene: () => scene, getTextures: () => textures }
 
 let pkg = null
 let project = null
@@ -58,7 +64,7 @@ async function rebuild() {
     status.textContent = '解析中…'
     const sceneEntry = getEntry(pkg, 'scene.json')
     if (!sceneEntry) throw new Error('pkg 里没有 scene.json（这不是场景壁纸文件？）')
-    const sj = JSON.parse(sceneEntry.toString('utf8').replace(/^\uFEFF/, ''))
+    const sj = JSON.parse(readText(sceneEntry))
     scene = parseScene(sj, project)
     textures = new Map()
     const white = { glTex: makeTexture(renderer.gl, new Uint8Array([255, 255, 255, 255]), 1, 1), width: 1, height: 1, rg88: false }
@@ -94,12 +100,12 @@ async function rebuild() {
       try {
         const modelEntry = getEntry(pkg, layer.image)
         if (!modelEntry) continue
-        const model = JSON.parse(modelEntry.toString('utf8').replace(/^\uFEFF/, ''))
+        const model = JSON.parse(readText(modelEntry))
         const mat = resolveMaterial(model)
         if (!mat) continue
         const matEntry = getEntry(pkg, mat.materialPath)
         if (!matEntry) continue
-        const material = JSON.parse(matEntry.toString('utf8').replace(/^\uFEFF/, ''))
+        const material = JSON.parse(readText(matEntry))
         const pass = material.passes && material.passes[0]
         const texName = pass && pass.textures && pass.textures[0]
         if (texName) {

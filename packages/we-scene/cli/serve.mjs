@@ -34,7 +34,7 @@ createServer(async (req, res) => {
       return
     }
     const data = await readFile(file)
-    res.writeHead(200, { 'Content-Type': mime[extname(file)] || 'application/octet-stream' })
+    res.writeHead(200, { 'Content-Type': mime[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' })
     res.end(data)
   } catch (e) {
     res.writeHead(404)

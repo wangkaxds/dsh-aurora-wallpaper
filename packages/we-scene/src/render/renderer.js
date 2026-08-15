@@ -12,7 +12,41 @@ void main() {
   v_UV = a_TexCoord;
 }`
 
-const FRAG = `#version 300 es
+function buildFragSource() {
+  // GLSL ES 3.0 不允许 sampler 数组用变量下标 → 用 JS 展开成 8 个常量下标块
+  const blocks = []
+  for (let i = 0; i < 8; i++) {
+    blocks.push(`
+  if (${i} < u_FxCount) {
+    int ty${i} = u_FxType[${i}];
+    if (ty${i} == 0) {
+      float ox${i} = sign(u_FxP[${i}].x) * u_FxP[${i}].x * u_FxP[${i}].x * u_Time;
+      float oy${i} = sign(u_FxP[${i}].y) * u_FxP[${i}].y * u_FxP[${i}].y * u_Time;
+      uv = vec2(fx_frac((uv.x + ox${i}) * u_FxP[${i}].z), fx_frac((uv.y + oy${i}) * u_FxP[${i}].w));
+    } else if (ty${i} == 1) {
+      vec4 f${i} = texture(u_FxMask[${i}], uv);
+      vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
+      vec2 flowMask${i} = (flow${i} - vec2(0.498)) * 2.0;
+      float phase${i} = 1.57079632679;
+      float t2${i} = u_FxP[${i}].x * u_Time + phase${i};
+      float off${i} = sin(fx_frac(t2${i} / 1.57079632679) * 1.57079632679) * 0.498 + 0.5;
+      float base${i} = cos(t2${i}) >= 0.0 ? 1.0 : 0.0;
+      off${i} = base${i} > 0.5 ? pow(off${i}, u_FxP[${i}].w) : 1.0 - pow(1.0 - off${i}, u_FxP[${i}].z);
+      off${i} = off${i} * 2.0 - 1.0;
+      float amp2${i} = u_FxP[${i}].y * u_FxP[${i}].y;
+      uv += off${i} * amp2${i} * flowMask${i};
+    } else if (ty${i} == 2) {
+      vec4 f${i} = texture(u_FxMask[${i}], uv);
+      float mask${i} = u_FxRG88[${i}] > 0.5 ? f${i}.a : f${i}.r;
+      vec2 dir${i} = vec2(-sin(u_FxP[${i}].w), cos(u_FxP[${i}].w));
+      float pos${i} = abs(dot(uv - vec2(0.5), dir${i}));
+      float dist${i} = u_Time * u_FxP[${i}].x + dot(uv, dir${i}) * u_FxP[${i}].y;
+      float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z) * mask${i};
+      uv += vec2(dir${i}.y, -dir${i}.x) * s${i};
+    }
+  }`)
+  }
+  return `#version 300 es
 precision mediump float;
 in vec2 v_UV;
 uniform sampler2D u_Tex;
@@ -35,35 +69,7 @@ float fx_frac(float x) { return x - floor(x); }
 
 void main() {
   vec2 uv = v_UV;
-  for (int i = 0; i < 8; i++) {
-    if (i >= u_FxCount) break;
-    int ty = u_FxType[i];
-    if (ty == 0) {
-      float ox = sign(u_FxP[i].x) * u_FxP[i].x * u_FxP[i].x * u_Time;
-      float oy = sign(u_FxP[i].y) * u_FxP[i].y * u_FxP[i].y * u_Time;
-      uv = vec2(fx_frac((uv.x + ox) * u_FxP[i].z), fx_frac((uv.y + oy) * u_FxP[i].w));
-    } else if (ty == 1) {
-      vec4 f = texture(u_FxMask[i], uv);
-      vec2 flow = u_FxRG88[i] > 0.5 ? vec2(f.a, f.r) : f.rg;
-      vec2 flowMask = (flow - vec2(0.498)) * 2.0;
-      float phase = 1.57079632679;
-      float t2 = u_FxP[i].x * u_Time + phase;
-      float off = sin(fx_frac(t2 / 1.57079632679) * 1.57079632679) * 0.498 + 0.5;
-      float base = cos(t2) >= 0.0 ? 1.0 : 0.0;
-      off = base > 0.5 ? pow(off, u_FxP[i].w) : 1.0 - pow(1.0 - off, u_FxP[i].z);
-      off = off * 2.0 - 1.0;
-      float amp2 = u_FxP[i].y * u_FxP[i].y;
-      uv += off * amp2 * flowMask;
-    } else if (ty == 2) {
-      vec4 f = texture(u_FxMask[i], uv);
-      float mask = u_FxRG88[i] > 0.5 ? f.a : f.r;
-      vec2 dir = vec2(-sin(u_FxP[i].w), cos(u_FxP[i].w));
-      float pos = abs(dot(uv - vec2(0.5), dir));
-      float dist = u_Time * u_FxP[i].x + dot(uv, dir) * u_FxP[i].y;
-      float s = sin(dist) * (u_FxP[i].z * u_FxP[i].z) * mask;
-      uv += vec2(dir.y, -dir.x) * s;
-    }
-  }
+${blocks.join('')}
   vec4 t = texture(u_Tex, uv);
   vec3 rgb = t.rgb * u_Color;
   float a = t.a * u_Alpha;
@@ -73,6 +79,9 @@ void main() {
   a *= mix(0.0, 1.0, blend);
   fragColor = vec4(rgb, a);
 }`
+}
+
+const FRAG = buildFragSource()
 
 const ALIGN = {
   center: [0.5, 0.5],
@@ -155,7 +164,8 @@ export function createRenderer(canvas) {
     let drawn = 0
     for (const layer of scene.layers) {
       if (!layer.visible || layer.particle) continue
-      const tex = layer.solid || !layer.textureName ? white : textures.get(layer.textureName) || white
+      const texObj = layer.solid || !layer.textureName ? null : textures.get(layer.textureName)
+      const tex = texObj && texObj.glTex ? texObj.glTex : white
       const a = ALIGN[layer.alignment] || [0.5, 0.5]
       const w = layer.size[0] * layer.scale[0]
       const h = layer.size[1] * layer.scale[1]
