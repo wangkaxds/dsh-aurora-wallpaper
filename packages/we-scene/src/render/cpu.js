@@ -102,10 +102,20 @@ function effectChain(layer) {
         direction: typeof c.direction === 'number' ? c.direction : 0,
         perspective: typeof c.perspective === 'number' ? c.perspective : 0,
       })
+    } else if (e.file.endsWith('waterflow/effect.json')) {
+      items.push({
+        type: 'flow',
+        mask: pass && pass.textures && pass.textures[1],
+        phase: pass && pass.textures && pass.textures[2],
+        speed: typeof c.speed === 'number' ? c.speed : 1,
+        strength: typeof c.strength === 'number' ? c.strength : 1,
+        phaseScale: typeof c.phasescale === 'number' ? c.phasescale : 2,
+      })
     } else if (e.file.endsWith('foliagesway/effect.json')) {
       items.push({
         type: 'sway',
         mask: pass && pass.textures && pass.textures[1],
+        masked: (pass && pass.combos && pass.combos.MASK) === 1,
         strength: typeof c.strength === 'number' ? c.strength : 0.4,
         speed: typeof c.speeduv === 'number' ? c.speeduv : 5,
         direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
@@ -209,11 +219,13 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const zw = rotate2([1 / aspect, aspect], it.direction)
           const params = rotate2([u, v], it.direction)
           let amp = it.strength * it.strength * 0.005
-          // 摆动蒙版（WE 中提供了蒙版纹理即启用 MASK 组合，限制摆动区域）
-          const swayMask = textures.get(it.mask)
-          if (swayMask) {
-            const mf = sample(swayMask, u, v)
-            amp *= swayMask.rg88 ? mf[3] / 255 : mf[0] / 255
+          // 场景 pass 无 MASK 组合时整层摆动（与 WE 行为一致）；显式 MASK=1 才用蒙版
+          if (it.masked) {
+            const swayMask = textures.get(it.mask)
+            if (swayMask) {
+              const mf = sample(swayMask, u, v)
+              amp *= swayMask.rg88 ? mf[3] / 255 : mf[0] / 255
+            }
           }
           const phase = (n[1] / 255 * Math.PI * 2 + params[0] * 10 + params[1] * 5) * it.phase
           const sines = [1, -0.16161616, 0.0083333, -0.00019841].map((k) => {
@@ -230,7 +242,40 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           v += zw[1] * sumC * amp
         }
       }
-      const t = sample(tex, u, v)
+      const t0 = sample(tex, u, v)
+      let t = t0
+      // waterflow：对已采样结果做流向混合（颜色阶段，按效果顺序执行）
+      for (const it of fx.items) {
+        if (it.type !== 'flow') continue
+        const m = textures.get(it.mask) || WHITE
+        const f = sample(m, u, v)
+        const flow = m.rg88 ? [f[3] / 255, f[0] / 255] : [f[0] / 255, f[1] / 255]
+        const mx = (flow[0] - 0.498) * 2
+        const my = (flow[1] - 0.498) * 2
+        const amount = Math.min(1, Math.hypot(mx, my))
+        const phaseTex = textures.get(it.phase) || WHITE
+        const pf = sample(phaseTex, u * it.phaseScale, v * it.phaseScale)
+        const ph = pf[0] / 255
+        const amp = it.strength * 0.1
+        const c1 = frac(time * it.speed)
+        const c2 = frac(time * it.speed + 0.5)
+        const c3 = frac(0.25 + time * it.speed)
+        const c4 = frac(0.25 + time * it.speed + 0.5)
+        const blend = 2 * Math.abs(c1 - 0.5)
+        const blend2 = 2 * Math.abs(c3 - 0.5)
+        const s1 = (c1 - 0.5) * amp
+        const s2 = (c2 - 0.5) * amp
+        const s3 = (c3 - 0.5) * amp
+        const s4 = (c4 - 0.5) * amp
+        const a1 = sample(tex, u + mx * s1, v + my * s1)
+        const a2 = sample(tex, u + mx * s2, v + my * s2)
+        const a3 = sample(tex, u + mx * s3, v + my * s3)
+        const a4 = sample(tex, u + mx * s4, v + my * s4)
+        const fA = mix4(a1, a2, blend)
+        const fB = mix4(a3, a4, blend2)
+        const fM = mix4(fA, fB, smoothstep(0.2, 0.8, ph))
+        t = mix4(t, fM, amount)
+      }
       let r = t[0] / 255 * layer.color[0] * layer.brightness
       let g = t[1] / 255 * layer.color[1] * layer.brightness
       let b2 = t[2] / 255 * layer.color[2] * layer.brightness
@@ -280,6 +325,10 @@ function mix(a, b, t) {
 
 function frac(x) {
   return x - Math.floor(x)
+}
+
+function mix4(a, b, t) {
+  return [a[0] * (1 - t) + b[0] * t, a[1] * (1 - t) + b[1] * t, a[2] * (1 - t) + b[2] * t, a[3] * (1 - t) + b[3] * t]
 }
 
 function rotate2(v, a) {

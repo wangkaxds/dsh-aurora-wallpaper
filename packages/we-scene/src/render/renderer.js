@@ -14,9 +14,10 @@ void main() {
 
 function buildFragSource() {
   // GLSL ES 3.0 不允许 sampler 数组用变量下标 → 用 JS 展开成 8 个常量下标块
-  const blocks = []
+  const dispBlocks = []
+  const flowBlocks = []
   for (let i = 0; i < 8; i++) {
-    blocks.push(`
+    dispBlocks.push(`
   if (${i} < u_FxCount) {
     int ty${i} = u_FxType[${i}];
     if (ty${i} == 0) {
@@ -49,7 +50,9 @@ function buildFragSource() {
       vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w);
       vec2 pa${i} = rot2(uv, u_FxP[${i}].w);
       float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005;
-      amp${i} *= texture(u_FxMask[${i}], uv).r;
+      if (u_FxRG88[${i}] > 1.5) {
+        amp${i} *= texture(u_FxMask[${i}], uv).r;
+      }
       float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
       float sA${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 1.0);
       float sB${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * -0.16161616);
@@ -61,6 +64,33 @@ function buildFragSource() {
       float cD${i} = sin(0.4 + ph${i} + u_FxP[${i}].x * u_Time * 0.000024801587);
       uv += vec2(zw${i}.x * (sA${i} + sB${i} + sC${i} + sD${i}) * amp${i}, zw${i}.y * (cA${i} + cB${i} + cC${i} + cD${i}) * amp${i});
     }
+  }`)
+    flowBlocks.push(`
+  if (${i} < u_FxCount && u_FxType[${i}] == 4) {
+      vec4 f${i} = texture(u_FxMask[${i}], uv);
+      vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
+      flow${i} = (flow${i} - vec2(0.498)) * 2.0;
+      float amount${i} = min(1.0, length(flow${i}));
+      float ph${i} = texture(u_Aux, uv * u_FxP[${i}].z).r;
+      float amp${i} = u_FxP[${i}].y * 0.1;
+      float c1${i} = fx_frac(u_Time * u_FxP[${i}].x);
+      float c2${i} = fx_frac(u_Time * u_FxP[${i}].x + 0.5);
+      float c3${i} = fx_frac(0.25 + u_Time * u_FxP[${i}].x);
+      float c4${i} = fx_frac(0.25 + u_Time * u_FxP[${i}].x + 0.5);
+      float b1${i} = 2.0 * abs(c1${i} - 0.5);
+      float b2${i} = 2.0 * abs(c3${i} - 0.5);
+      vec2 o1${i} = flow${i} * ((c1${i} - 0.5) * amp${i});
+      vec2 o2${i} = flow${i} * ((c2${i} - 0.5) * amp${i});
+      vec2 o3${i} = flow${i} * ((c3${i} - 0.5) * amp${i});
+      vec2 o4${i} = flow${i} * ((c4${i} - 0.5) * amp${i});
+      vec4 a1${i} = texture(u_Tex, uv + o1${i});
+      vec4 a2${i} = texture(u_Tex, uv + o2${i});
+      vec4 a3${i} = texture(u_Tex, uv + o3${i});
+      vec4 a4${i} = texture(u_Tex, uv + o4${i});
+      vec4 fA${i} = mix(a1${i}, a2${i}, b1${i});
+      vec4 fB${i} = mix(a3${i}, a4${i}, b2${i});
+      vec4 fM${i} = mix(fA${i}, fB${i}, smoothstep(0.2, 0.8, ph${i}));
+      t = mix(t, fM${i}, amount${i});
   }`)
   }
   return `#version 300 es
@@ -76,11 +106,12 @@ uniform float u_KeyFuzz;
 uniform float u_KeyTol;
 uniform float u_Time;
 uniform int u_FxCount;
-uniform int u_FxType[8];   // 0=scroll 1=shake 2=waves 3=sway
-uniform vec4 u_FxP[8];     // scroll:(sx,sy,rx,ry) shake:(speed,amp,fx,fy) waves:(speed,scale,strength,direction) sway:(speed,strength,noiseScale,direction)
+uniform int u_FxType[8];   // 0=scroll 1=shake 2=waves 3=sway 4=flow
+uniform vec4 u_FxP[8];     // scroll:(sx,sy,rx,ry) shake:(speed,amp,fx,fy) waves:(speed,scale,strength,direction) sway:(speed,strength,noiseScale,direction) flow:(speed,strength,phaseScale,0)
 uniform sampler2D u_FxMask[8];
 uniform float u_FxRG88[8];
 uniform sampler2D u_Noise;
+uniform sampler2D u_Aux;
 uniform vec2 u_FbSize;
 out vec4 fragColor;
 
@@ -93,8 +124,9 @@ vec2 rot2(vec2 v, float a) {
 
 void main() {
   vec2 uv = v_UV;
-${blocks.join('')}
+${dispBlocks.join('')}
   vec4 t = texture(u_Tex, uv);
+${flowBlocks.join('')}
   vec3 rgb = t.rgb * u_Color;
   float a = t.a * u_Alpha;
   rgb = mix(rgb, u_Tint, u_TintAlpha);
@@ -143,6 +175,7 @@ export function createRenderer(canvas) {
     fxMask: new Array(MAX_FX).fill(0).map((_, i) => gl.getUniformLocation(program, 'u_FxMask[' + i + ']')),
     fxRG88: gl.getUniformLocation(program, 'u_FxRG88[0]'),
     noise: gl.getUniformLocation(program, 'u_Noise'),
+    aux: gl.getUniformLocation(program, 'u_Aux'),
     fbSize: gl.getUniformLocation(program, 'u_FbSize'),
     aPos: gl.getAttribLocation(program, 'a_Position'),
     aUv: gl.getAttribLocation(program, 'a_TexCoord'),
@@ -214,6 +247,12 @@ export function createRenderer(canvas) {
       gl.uniform1i(loc.noise, 9)
       gl.uniform2f(loc.fbSize, texObj ? texObj.width : 1, texObj ? texObj.height : 1)
       const fx = effectUniforms(layer, time)
+      // 水流相位纹理（本图层第一个 flow 效果的 phase 纹理）绑定到 10 号单元
+      const flowItem = fx.items.find((it) => it.type === 'flow')
+      const auxTex = flowItem && flowItem.phase ? textures.get(flowItem.phase) : null
+      gl.activeTexture(gl.TEXTURE10)
+      gl.bindTexture(gl.TEXTURE_2D, auxTex && auxTex.glTex ? auxTex.glTex : white)
+      gl.uniform1i(loc.aux, 10)
       gl.uniform3f(loc.tint, fx.tint[0], fx.tint[1], fx.tint[2])
       gl.uniform1f(loc.tintAlpha, fx.tintAlpha)
       gl.uniform3f(loc.key, fx.key[0], fx.key[1], fx.key[2])
@@ -226,7 +265,7 @@ export function createRenderer(canvas) {
       gl.uniform1i(loc.fxCount, count)
       for (let i = 0; i < count; i++) {
         const it = fx.items[i]
-        types[i] = it.type === 'scroll' ? 0 : it.type === 'shake' ? 1 : it.type === 'waves' ? 2 : 3
+        types[i] = it.type === 'scroll' ? 0 : it.type === 'shake' ? 1 : it.type === 'waves' ? 2 : it.type === 'sway' ? 3 : 4
         if (it.type === 'scroll') {
           params[i * 4] = it.sx
           params[i * 4 + 1] = it.sy
@@ -242,18 +281,23 @@ export function createRenderer(canvas) {
           params[i * 4 + 1] = it.scale
           params[i * 4 + 2] = it.strength
           params[i * 4 + 3] = it.direction
-        } else {
+        } else if (it.type === 'sway') {
           params[i * 4] = it.speed
           params[i * 4 + 1] = it.strength
           params[i * 4 + 2] = it.noiseScale
           params[i * 4 + 3] = it.direction
+        } else {
+          params[i * 4] = it.speed
+          params[i * 4 + 1] = it.strength
+          params[i * 4 + 2] = it.phaseScale
+          params[i * 4 + 3] = 0
         }
         const maskTex = it.mask ? textures.get(it.mask) || null : null
         if (maskTex) {
           gl.activeTexture(gl.TEXTURE1 + i)
           gl.bindTexture(gl.TEXTURE_2D, maskTex.glTex)
           gl.uniform1i(loc.fxMask[i], 1 + i)
-          rg88[i] = maskTex.rg88 ? 1 : 0
+          rg88[i] = it.masked ? 2 : maskTex.rg88 ? 1 : 0
         } else {
           gl.activeTexture(gl.TEXTURE1 + i)
           gl.bindTexture(gl.TEXTURE_2D, white)
@@ -326,10 +370,20 @@ function effectUniforms(layer, time) {
         direction: typeof c.direction === 'number' ? c.direction : 0,
         perspective: typeof c.perspective === 'number' ? c.perspective : 0,
       })
+    } else if (e.file.endsWith('waterflow/effect.json')) {
+      items.push({
+        type: 'flow',
+        mask: pass && pass.textures && pass.textures[1],
+        phase: pass && pass.textures && pass.textures[2],
+        speed: typeof c.speed === 'number' ? c.speed : 1,
+        strength: typeof c.strength === 'number' ? c.strength : 1,
+        phaseScale: typeof c.phasescale === 'number' ? c.phasescale : 2,
+      })
     } else if (e.file.endsWith('foliagesway/effect.json')) {
       items.push({
         type: 'sway',
         mask: pass && pass.textures && pass.textures[1],
+        masked: (pass && pass.combos && pass.combos.MASK) === 1,
         strength: typeof c.strength === 'number' ? c.strength : 0.4,
         speed: typeof c.speeduv === 'number' ? c.speeduv : 5,
         direction: typeof c.scrolldirection === 'number' ? c.scrolldirection : 0,
