@@ -222,6 +222,8 @@ export function createRenderer(canvas, opts = {}) {
   }
 
   const whiteTex = makeTexture(gl, new Uint8Array([255, 255, 255, 255]), 1, 1)
+  // 无纹理的非 solid 层（纯效果层/文字对象层）：WE 语义为空层内容透明（白会导致纯白方块）
+  const transparentTex = makeTexture(gl, new Uint8Array([0, 0, 0, 0]), 1, 1)
 
   // ---------- uniform 设置 ----------
   function setVal(uni, name, setter) {
@@ -409,7 +411,7 @@ export function createRenderer(canvas, opts = {}) {
   async function renderLayer(layer, textures, cam, viewProj, width, height, time) {
     const texObj = !layer.solid && layer.textureName ? textures.get(layer.textureName) : null
     if (texObj && texObj.video) return
-    const srcTex = texObj && texObj.glTex ? texObj.glTex : whiteTex
+    const srcTex = texObj && texObj.glTex ? texObj.glTex : (layer.solid ? whiteTex : transparentTex)
     const w = Math.max(1, texObj ? texObj.width : 1)
     const h = Math.max(1, texObj ? texObj.height : 1)
     const color4 = [layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness, layer.alpha]
@@ -536,7 +538,21 @@ export function createRenderer(canvas, opts = {}) {
     compositeLayer(compProg, curInput.tex, [1, 1, 1, 1], layer, cam, viewProj, width, height)
   }
 
-  return { gl, render: renderScene, getFBO, getEffectProgram, progCache, shaderResolver, whiteTex }
+  return {
+    gl,
+    render: renderScene,
+    getFBO,
+    getEffectProgram,
+    progCache,
+    shaderResolver,
+    whiteTex,
+    // 场景切换时清空 shader 相关缓存（避免复用上一个场景的 shader 源/程序）
+    resetShaderCaches: function () {
+      progCache.clear()
+      includeCache.clear()
+      if (shaderSrcCache) shaderSrcCache.clear()
+    },
+  }
 }
 
 function linkProgram(gl, vsSrc, fsSrc) {
