@@ -15,8 +15,13 @@ const CONFIG = {
   weNoisePng: 'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\materials\\util\\noise.png',
   // 官方 util/noise.tex（带 mip 链：sway 等效果靠 LINEAR_MIPMAP_LINEAR 平滑位移场）
   weNoiseTex: 'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\materials\\util\\noise.tex',
-  // Wallpaper Engine 安装目录的 shader 目录（效果 shader 与公共头文件；运行时读取，不分发）
-  weShaderDir: 'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\shaders',
+  // WE 安装目录的 shader 目录（效果 shader 与公共头文件；运行时读取，不分发）。
+  // 注：插件 fs 沙箱对 D:\steam 的 shaders 目录无读取授权，需要先复制到 workspace 内（见 INSTALL 文档）：
+  //   robocopy "D:\steam\steamapps\common\wallpaper_engine\assets\shaders" "D:\杂活\we-shaders" /E
+  weShaderDirs: [
+    'D:\\杂活\\we-shaders',
+    'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\shaders',
+  ],
 }
 
 // kind → 媒体类型
@@ -301,7 +306,7 @@ export default {
           },
         }))
 
-        // WE shader 源（效果 shader 与公共头文件）：运行时读取本机安装，不分发
+        // WE shader 源（效果 shader 与公共头文件）：运行时读取，不分发
         disposers.push(webServer.register({
           kind: 'prefix',
           path: '/dyn/aurora-shader',
@@ -313,10 +318,20 @@ export default {
                 res.end()
                 return
               }
-              const target = await fs.resolve(CONFIG.weShaderDir + '\\' + rel.split('/').join('\\'))
-              const bytes = await fs.readBytes(target, undefined, 2 * 1024 * 1024)
-              res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
-              res.end(new TextDecoder().decode(bytes))
+              const relWin = rel.split('/').join('\\')
+              for (const dir of CONFIG.weShaderDirs) {
+                try {
+                  const target = await fs.resolve(dir + '\\' + relWin)
+                  const bytes = await fs.readBytes(target, undefined, 2 * 1024 * 1024)
+                  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
+                  res.end(new TextDecoder().decode(bytes))
+                  return
+                } catch (e2) {
+                  // 尝试下一个目录
+                }
+              }
+              res.writeHead(404)
+              res.end()
             } catch (err) {
               res.writeHead(404)
               res.end()
