@@ -16,10 +16,11 @@ const CONFIG = {
   // 官方 util/noise.tex（带 mip 链：sway 等效果靠 LINEAR_MIPMAP_LINEAR 平滑位移场）
   weNoiseTex: 'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\materials\\util\\noise.tex',
   // WE 安装目录的 shader 目录（效果 shader 与公共头文件；运行时读取，不分发）。
-  // 注：插件 fs 沙箱对 D:\steam 的 shaders 目录无读取授权，需要先复制到 workspace 内（见 INSTALL 文档）：
-  //   robocopy "D:\steam\steamapps\common\wallpaper_engine\assets\shaders" "D:\杂活\we-shaders" /E
+  // 注：插件 fs 沙箱只能读 workspace（本仓库）内路径；WE 的 assets\shaders 需复制到仓库内 we-shaders/
+  //   robocopy "D:\steam\steamapps\common\wallpaper_engine\assets\shaders" "D:\杂活\aurora-wallpaper\we-shaders" /E
+  // （we-shaders/ 已加入 .gitignore，版权资产不入库）
   weShaderDirs: [
-    'D:\\杂活\\we-shaders',
+    'D:\\杂活\\aurora-wallpaper\\we-shaders',
     'D:\\steam\\steamapps\\common\\wallpaper_engine\\assets\\shaders',
   ],
 }

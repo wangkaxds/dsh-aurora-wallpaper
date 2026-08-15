@@ -19,3 +19,6 @@ Thumbs.db
 
 # 鏃ュ織
 *.log
+
+# WE shader 运行时副本（版权资产，不入库）
+we-shaders/
