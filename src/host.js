@@ -314,9 +314,9 @@ export default {
                 return
               }
               const target = await fs.resolve(CONFIG.weShaderDir + '\\' + rel.split('/').join('\\'))
-              const text = await fs.readText(target)
+              const bytes = await fs.readBytes(target, undefined, 2 * 1024 * 1024)
               res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
-              res.end(text)
+              res.end(new TextDecoder().decode(bytes))
             } catch (err) {
               res.writeHead(404)
               res.end()
