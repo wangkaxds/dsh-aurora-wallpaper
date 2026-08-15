@@ -35,7 +35,7 @@ function buildFragSource() {
       float base${i} = cos(t2${i}) >= 0.0 ? 1.0 : 0.0;
       off${i} = base${i} > 0.5 ? pow(off${i}, u_FxP[${i}].w) : 1.0 - pow(1.0 - off${i}, u_FxP[${i}].z);
       off${i} = off${i} * 2.0 - 1.0;
-      float amp2${i} = u_FxP[${i}].y * u_FxP[${i}].y;
+      float amp2${i} = u_FxP[${i}].y * u_FxP[${i}].y * u_AmpScale;
       uv += off${i} * amp2${i} * flowMask${i};
     } else if (ty${i} == 2) {
       vec4 f${i} = texture(u_FxMask[${i}], uv0);
@@ -44,7 +44,7 @@ function buildFragSource() {
       vec2 dir${i} = vec2(-sin(u_FxP[${i}].w * fg${i}), cos(u_FxP[${i}].w * fg${i}));
       float pos${i} = abs(dot(uv0 - vec2(0.5), dir${i}));
       float dist${i} = u_Time * u_FxP[${i}].x + dot(uv0, dir${i}) * u_FxP[${i}].y;
-      float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z) * mask${i};
+      float s${i} = sin(dist${i}) * (u_FxP[${i}].z * u_FxP[${i}].z * u_AmpScale) * mask${i};
       uv += vec2(dir${i}.y, -dir${i}.x) * s${i};
     } else if (ty${i} == 3) {
       vec4 n${i} = texture(u_Noise, uv0 * u_FxP[${i}].z);
@@ -52,7 +52,7 @@ function buildFragSource() {
       float fg${i} = u_Flip > 0.5 ? -1.0 : 1.0;
       vec2 zw${i} = rot2(vec2(1.0 / aspect${i}, aspect${i}), u_FxP[${i}].w * fg${i});
       vec2 pa${i} = rot2(uv0, u_FxP[${i}].w * fg${i});
-      float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005;
+      float amp${i} = u_FxP[${i}].y * u_FxP[${i}].y * 0.005 * u_AmpScale;
       amp${i} *= texture(u_FxMask[${i}], uv0).r;
       float ph${i} = (n${i}.g * 6.28318530718 + pa${i}.x * 10.0 + pa${i}.y * 5.0) * 0.5;
       float sA${i} = sin(ph${i} + u_FxP[${i}].x * u_Time * 1.0);
@@ -104,6 +104,7 @@ uniform sampler2D u_Noise;
 uniform sampler2D u_Aux;
 uniform vec2 u_FbSize;
 uniform float u_Flip;
+uniform float u_AmpScale;
 out vec4 fragColor;
 
 float fx_frac(float x) { return x - floor(x); }
@@ -170,6 +171,7 @@ export function createRenderer(canvas) {
     aux: gl.getUniformLocation(program, 'u_Aux'),
     fbSize: gl.getUniformLocation(program, 'u_FbSize'),
     flip: gl.getUniformLocation(program, 'u_Flip'),
+    ampScale: gl.getUniformLocation(program, 'u_AmpScale'),
     aPos: gl.getAttribLocation(program, 'a_Position'),
     aUv: gl.getAttribLocation(program, 'a_TexCoord'),
   }
@@ -201,6 +203,7 @@ export function createRenderer(canvas) {
 
   function render(scene, textures, width, height, time = 0) {
     const flip = globalThis.__WE_FLIP ? 1.0 : 0.0
+    const amp = globalThis.__WE_AMP !== undefined ? globalThis.__WE_AMP : 1.0
     gl.viewport(0, 0, width, height)
     const general = scene.general || {}
     if (general.clearenabled !== false) {
@@ -235,6 +238,7 @@ export function createRenderer(canvas) {
       gl.uniform1f(loc.alpha, layer.alpha)
       gl.uniform1f(loc.time, time)
       gl.uniform1f(loc.flip, flip)
+      gl.uniform1f(loc.ampScale, amp)
       // 全局噪声（util/noise）绑定到 9 号纹理单元
       const noiseTex = textures.get('util/noise')
       gl.activeTexture(gl.TEXTURE9)

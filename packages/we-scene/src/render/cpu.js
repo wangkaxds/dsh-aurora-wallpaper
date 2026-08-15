@@ -192,6 +192,7 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
       if (w0 < 0 || w1 < 0 || w2 < 0) continue
       const u0 = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0]
       const v0 = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1]
+      const ampScale = globalThis.__WE_AMP !== undefined ? globalThis.__WE_AMP : 1
       // 位移类效果：WE 各效果 = 独立滤镜层，其输入（噪声/蒙版/流向/相位）一律采样自原始 uv，
       // 位移只累加到最终采样坐标（不链式污染下一个效果的输入）
       let su = u0
@@ -216,7 +217,7 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           off = base === 1 ? Math.pow(off, it.friction[1]) : 1 - Math.pow(1 - off, it.friction[0])
           off = Math.min(1, Math.max(0, (off - it.bounds[0]) * (1 / (it.bounds[1] - it.bounds[0]))))
           off = off * 2 - 1
-          const amp2 = it.amp * it.amp
+          const amp2 = it.amp * it.amp * ampScale
           su += off * amp2 * flowMask[0]
           sv += off * amp2 * flowMask[1]
         } else if (it.type === 'waves') {
@@ -237,7 +238,7 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const sgn = globalThis.__WE_FLIP ? -1 : 1
           const zw = rotate2([1 / aspect, aspect], it.direction * sgn)
           const params = rotate2([u0, v0], it.direction * sgn)
-          let amp = it.strength * it.strength * 0.005
+          let amp = it.strength * it.strength * 0.005 * ampScale
           // 摆动蒙版：pass 提供了蒙版纹理即启用（WE 编辑器行为），限制摆动区域
           if (it.mask) {
             const swayMask = textures.get(it.mask)

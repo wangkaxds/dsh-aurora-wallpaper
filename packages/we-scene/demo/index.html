@@ -31,6 +31,9 @@ const status = document.getElementById('status')
 const renderer = createRenderer(cv)
 // 方向实验开关：URL 加 ?flip=1 翻转所有蒙版驱动位移的方向（shake/sway/waves/flow）
 if (new URLSearchParams(location.search).get('flip') === '1') globalThis.__WE_FLIP = true
+// 幅度缩放：URL 加 ?amp=0.5 等比缩放呼吸/摆动/抖动幅度
+const ampParam = new URLSearchParams(location.search).get('amp')
+if (ampParam !== null) globalThis.__WE_AMP = Number(ampParam)
 const utf8 = new TextDecoder()
 function readText(bytes) {
   return utf8.decode(bytes).replace(/^\uFEFF/, '')
