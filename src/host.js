@@ -1,6 +1,6 @@
 // DSH Aurora Wallpaper —— 宿主半
-// 职责：扫描壁纸引擎目录、提供视频流/列表/状态 HTTP 路由、
-//       向页面注入 <video> 背景层与同步脚本、接收设置页的切换 RPC。
+// 职责：扫描壁纸引擎目录（视频/场景均支持）、提供视频流/列表/状态 HTTP 路由、
+//       向页面注入背景层与同步脚本、接收设置页的切换 RPC。
 //
 // 使用前请修改下方 CONFIG。
 
@@ -9,6 +9,22 @@ const CONFIG = {
   workshopDir: 'D:\\steam\\steamapps\\workshop\\content\\431960',
   // 插件工作目录（缓存清单；需可写，不可写时仅丢失跨重启记忆）
   vaultDir: 'D:\\aurora-wallpaper',
+}
+
+// kind → 媒体类型
+const MIME = {
+  video: 'video/mp4',
+  gif: 'image/gif',
+  image: 'image/jpeg',
+  webp: 'image/webp',
+}
+
+function kindOf(fileName) {
+  if (/\.mp4$/i.test(fileName)) return 'video'
+  if (/\.gif$/i.test(fileName)) return 'gif'
+  if (/\.webp$/i.test(fileName)) return 'webp'
+  if (/\.(jpe?g|png)$/i.test(fileName)) return 'image'
+  return null
 }
 
 export default {
@@ -53,7 +69,8 @@ export default {
                 cached = { path: v.file, bytes }
               }
               const total = bytes.byteLength
-              const range = req.headers.range
+              const mime = MIME[v.kind] || 'application/octet-stream'
+              const range = v.kind === 'video' ? req.headers.range : undefined
               if (typeof range === 'string') {
                 const m = /bytes=(\d*)-(\d*)/.exec(range)
                 let start = 0
@@ -70,7 +87,7 @@ export default {
                   return
                 }
                 res.writeHead(206, {
-                  'Content-Type': 'video/mp4',
+                  'Content-Type': mime,
                   'Content-Length': String(end - start + 1),
                   'Content-Range': 'bytes ' + start + '-' + end + '/' + total,
                   'Accept-Ranges': 'bytes',
@@ -79,7 +96,7 @@ export default {
                 res.end(bytes.subarray(start, end + 1))
               } else {
                 res.writeHead(200, {
-                  'Content-Type': 'video/mp4',
+                  'Content-Type': mime,
                   'Content-Length': String(total),
                   'Accept-Ranges': 'bytes',
                   'Cache-Control': 'public, max-age=3600',
@@ -103,9 +120,11 @@ export default {
           if (proj && typeof proj.title === 'string' && proj.title.trim()) title = proj.title.trim()
           let file = null
           if (proj && typeof proj.file === 'string' && proj.file.trim()) file = proj.file.trim()
-          return { title, file }
+          let type = 'video'
+          if (proj && typeof proj.type === 'string') type = proj.type.toLowerCase()
+          return { title, file, type }
         } catch (e) {
-          return { title: subName, file: null }
+          return { title: subName, file: null, type: 'video' }
         }
       }
 
@@ -122,18 +141,32 @@ export default {
               const info = await readProjectInfo(subPath, subName)
               const st = await fs.resolve(subPath)
               const files = await fs.listDir(st, undefined)
+
+              // 1) 优先视频文件（project.json 指定或第一个 mp4）
               let full = null
+              let kind = null
               if (info.file) {
                 const hit = files.find((f) => f.name === info.file)
-                if (hit) full = subPath + '\\' + info.file
+                const k = hit ? kindOf(hit.name) : null
+                if (hit && k) { full = subPath + '\\' + info.file; kind = k }
               }
               if (!full) {
-                const mp4 = files.find((f) => /\.mp4$/i.test(f.name))
-                if (mp4) full = subPath + '\\' + mp4.name
+                const mp4 = files.find((f) => kindOf(f.name) === 'video')
+                if (mp4) { full = subPath + '\\' + mp4.name; kind = 'video' }
+              }
+              // 2) 场景壁纸：回退到动态预览 gif
+              if (!full) {
+                const gif = files.find((f) => kindOf(f.name) === 'gif')
+                if (gif) { full = subPath + '\\' + gif.name; kind = 'gif' }
+              }
+              // 3) 再回退到静态图（webp/jpg/png）
+              if (!full) {
+                const img = files.find((f) => kindOf(f.name) === 'webp' || kindOf(f.name) === 'image')
+                if (img) { full = subPath + '\\' + img.name; kind = kindOf(img.name) }
               }
               if (!full) continue
               if (videos.some((v) => v.file === full)) continue
-              videos.push({ n: 0, file: full, title: info.title })
+              videos.push({ n: 0, file: full, title: info.title, kind })
               added.push(info.title)
             } catch (e2) {
               // 跳过不可读的子目录
@@ -146,7 +179,7 @@ export default {
       }
 
       function renumber() {
-        videos = videos.map((v, i) => ({ n: i, file: v.file, title: v.title }))
+        videos = videos.map((v, i) => ({ n: i, file: v.file, title: v.title, kind: v.kind || 'video' }))
       }
 
       const boot = (async () => {
@@ -154,7 +187,7 @@ export default {
           const mt = await fs.resolve(MANIFEST)
           const manifest = JSON.parse(await fs.readText(mt))
           if (manifest && Array.isArray(manifest.videos) && manifest.videos.length > 0) {
-            videos = manifest.videos.map((v) => ({ n: 0, file: v.file, title: v.title }))
+            videos = manifest.videos.map((v) => ({ n: 0, file: v.file, title: v.title, kind: v.kind || 'video' }))
           }
         } catch (e) {
           videos = []
@@ -172,7 +205,7 @@ export default {
               res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
               res.end(JSON.stringify({
                 index: current,
-                videos: videos.map((v, i) => ({ title: v.title, url: '/dyn/aurora-video/' + i + '.mp4' })),
+                videos: videos.map((v, i) => ({ title: v.title, url: '/dyn/aurora-video/' + i + '.mp4', k: v.kind || 'video' })),
               }))
             } catch (err) {
               res.writeHead(500)
@@ -219,8 +252,8 @@ export default {
           const body = /<body(?:\s[^>]*)?>/i.exec(html)
           if (body === null) return html
           const at = body.index + body[0].length
-          const listJs = JSON.stringify(videos.map((v) => [v.title, '/dyn/aurora-video/' + v.n + '.mp4']))
-          const injection = '<video id="aurora-bg" autoplay muted loop playsinline></video><style>#aurora-bg{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;pointer-events:none;transition:opacity .5s;transform:translateZ(0);backface-visibility:hidden;will-change:transform}@media (prefers-reduced-motion:reduce){#aurora-bg{display:none}}</style><script>(function(){var list=' + listJs + ';var v=document.getElementById("aurora-bg");var cur=-1;var saved=parseInt(localStorage.getItem("aurora-index")||"0",10);if(isNaN(saved))saved=0;function show(n){if(!list.length)return;n=((n%list.length)+list.length)%list.length;if(n===cur)return;cur=n;var it=list[n];if(!it)return;v.style.opacity=0;v.src=it.url;localStorage.setItem("aurora-index",String(n))}v.addEventListener("loadeddata",function(){v.style.opacity=1;document.body.classList.add("aurora-live")});v.addEventListener("error",function(){document.body.classList.remove("aurora-live")});fetch("/dyn/aurora-set?index="+saved,{cache:"no-store"}).catch(function(){});function poll(){fetch("/dyn/aurora-list.json",{cache:"no-store"}).then(function(r){return r.json()}).then(function(s){if(s&&Array.isArray(s.videos)&&s.videos.length){list=s.videos;show(typeof s.index==="number"?s.index:0)}}).catch(function(){})}poll();setInterval(poll,3000)})();</scr' + 'ipt>'
+          const listJs = JSON.stringify(videos.map((v) => [v.title, '/dyn/aurora-video/' + v.n + '.mp4', v.kind || 'video']))
+          const injection = '<video id="aurora-bg" autoplay muted loop playsinline></video><style>#aurora-bg{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background-size:cover;background-position:center;z-index:-1;pointer-events:none;transition:opacity .5s;transform:translateZ(0);backface-visibility:hidden;will-change:transform}#aurora-bg.aurora-img{animation:auroraImgDrift 70s ease-in-out infinite alternate}@keyframes auroraImgDrift{0%{transform:translateZ(0) scale(1.02)}50%{transform:translateZ(0) scale(1.08)}100%{transform:translateZ(0) scale(1.04)}}@media (prefers-reduced-motion:reduce){#aurora-bg{display:none}}</style><script>(function(){var list=' + listJs + ';var v=document.getElementById("aurora-bg");var cur=-1;var saved=parseInt(localStorage.getItem("aurora-index")||"0",10);if(isNaN(saved))saved=0;function show(n){if(!list.length)return;n=((n%list.length)+list.length)%list.length;if(n===cur)return;cur=n;var it=list[n];if(!it)return;v.style.opacity=0;if(it[2]==="video"){v.classList.remove("aurora-img");v.style.backgroundImage="none";v.src=it[1];}else{v.classList.add("aurora-img");v.removeAttribute("src");try{v.load()}catch(e){}v.style.backgroundImage="url("+it[1]+")";v.style.opacity=1;document.body.classList.add("aurora-live");}localStorage.setItem("aurora-index",String(n))}v.addEventListener("loadeddata",function(){v.style.opacity=1;document.body.classList.add("aurora-live")});v.addEventListener("error",function(){document.body.classList.remove("aurora-live")});fetch("/dyn/aurora-set?index="+saved,{cache:"no-store"}).catch(function(){});function poll(){fetch("/dyn/aurora-list.json",{cache:"no-store"}).then(function(r){return r.json()}).then(function(s){if(s&&Array.isArray(s.videos)&&s.videos.length){list=s.videos.map(function(x){return [x.title,x.url,x.k||"video"]});show(typeof s.index==="number"?s.index:0)}}).catch(function(){})}poll();setInterval(poll,3000)})();</scr' + 'ipt>'
           return html.slice(0, at) + injection + html.slice(at)
         }))
       })()
@@ -228,7 +261,7 @@ export default {
       disposers.push(harness.handle('aurora-get', async () => ({ index: current, total: videos.length })))
       disposers.push(harness.handle('aurora-list', async () => ({
         index: current,
-        videos: videos.map((v, i) => ({ n: i, title: v.title })),
+        videos: videos.map((v, i) => ({ n: i, title: v.title, kind: v.kind || 'video' })),
       })))
       disposers.push(harness.handle('aurora-set', async (args) => {
         const n = ((typeof args.index === 'number' ? args.index : 0) % videos.length + videos.length) % videos.length
