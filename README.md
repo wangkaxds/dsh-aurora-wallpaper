@@ -47,6 +47,13 @@ const CONFIG = {
 - **视频循环处轻微卡顿**：浏览器对带音频轨的 4K 视频回跳需要重置渲染器，属已知限制；
 - **深浅不合口味**：`src/client.js` 里搜 `body[data-ds-dark-theme]::after` 和主题 token 即可自行调参。
 
+## 社区与支持
+
+- 💬 **反馈与讨论**：欢迎在 [GitHub Discussions](https://github.com/wangkaxds/dsh-aurora-wallpaper/discussions) 提交反馈；
+- 🐛 **错误报告**：发现 bug 请到 [Issues](https://github.com/wangkaxds/dsh-aurora-wallpaper/issues/new) 提交；
+- 🧭 **发现更多插件**：仓库添加了 `dsh-plugin` 主题标签，方便在社区里被发现；
+- 💬 **社区**：加入 DeepSeek Harness 的 [Discord 社区](https://discord.gg/Ycq5dCaS4)。
+
 ## 许可
 
 MIT License —— 详见 [LICENSE](LICENSE)。仓库只包含插件代码，不含任何壁纸视频文件。
