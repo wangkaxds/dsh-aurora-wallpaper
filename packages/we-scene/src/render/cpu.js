@@ -192,9 +192,9 @@ function drawTri(buf, W, H, a, b, c, uva, uvb, uvc, tex, fx, layer, time, textur
           const f = sample(m, u, v)
           const flow = m.rg88 ? [f[3] / 255, f[0] / 255] : [f[0] / 255, f[1] / 255]
           const flowMask = [(flow[0] - 0.498) * 2, (flow[1] - 0.498) * 2]
-          const phase = Math.PI / 2 // util/white 相位图 → r=1 → ×π/2
-          const t2 = it.speed * time + phase
-          let off = Math.sin(frac(t2 / (Math.PI / 2)) * (Math.PI / 2)) * 0.498 + 0.5
+          // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
+          const t2 = it.speed * time
+          let off = Math.sin(t2) * 0.498 + 0.5
           const base = Math.cos(t2) >= 0 ? 1 : 0
           off = base === 1 ? Math.pow(off, it.friction[1]) : 1 - Math.pow(1 - off, it.friction[0])
           off = Math.min(1, Math.max(0, (off - it.bounds[0]) * (1 / (it.bounds[1] - it.bounds[0]))))

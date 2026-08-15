@@ -28,9 +28,9 @@ function buildFragSource() {
       vec4 f${i} = texture(u_FxMask[${i}], uv);
       vec2 flow${i} = u_FxRG88[${i}] > 0.5 ? vec2(f${i}.a, f${i}.r) : f${i}.rg;
       vec2 flowMask${i} = (flow${i} - vec2(0.498)) * 2.0;
-      float phase${i} = 1.57079632679;
-      float t2${i} = u_FxP[${i}].x * u_Time + phase${i};
-      float off${i} = sin(fx_frac(t2${i} / 1.57079632679) * 1.57079632679) * 0.498 + 0.5;
+      // WE 的 M_PI_2 = 2π：sin(frac(t/2π)·2π) = sin(t) —— 平滑正弦，无跳变
+      float t2${i} = u_FxP[${i}].x * u_Time;
+      float off${i} = sin(t2${i}) * 0.498 + 0.5;
       float base${i} = cos(t2${i}) >= 0.0 ? 1.0 : 0.0;
       off${i} = base${i} > 0.5 ? pow(off${i}, u_FxP[${i}].w) : 1.0 - pow(1.0 - off${i}, u_FxP[${i}].z);
       off${i} = off${i} * 2.0 - 1.0;
