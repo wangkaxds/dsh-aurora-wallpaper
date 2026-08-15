@@ -420,6 +420,21 @@ export function hlsl2glsl(src, stage, combos, includeResolver) {
   code = code.replace(/([A-Za-z_]\w*\.(?:xyzw|xyz|xy|zw|rgba|rgb|rg|x|y|z|w|r|g|b|a))\s*([+-])\s*(\d+)(?![\d.])/g, '$1 $2 $3.0')
   code = code.replace(/(^|[^\w.])(\d+)\s*([+-])\s*(\d+\.\d+)/g, '$1$2.0 $3 $4')
   code = code.replace(/(^|[^\w.])(\d+)\s*([+-])\s*([A-Za-z_]\w*\.(?:xyzw|xyz|xy|zw|rgba|rgb|rg|x|y|z|w|r|g|b|a))/g, '$1$2.0 $3 $4')
+  // 整数字面量 ± 浮点类型变量（如 1 - g_Rough、1 + time）：
+  // 收集声明为 float/vec/mat 的 uniform 与局部变量名，仅对这些名字补 .0（int 变量不受影响）
+  {
+    const floatNames = new Set()
+    const declRe = /\b(?:uniform\s+)?(?:highp|mediump|lowp\s+)?(?:float|vec2|vec3|vec4|mat2|mat3|mat4)\s+([A-Za-z_][A-Za-z0-9_]*)/g
+    let dm
+    while ((dm = declRe.exec(code)) !== null) floatNames.add(dm[1])
+    if (floatNames.size > 0) {
+      const alt = Array.from(floatNames).sort((a, b) => b.length - a.length).join('|')
+      code = code.replace(new RegExp('(^|[^\\w.])(\\d+)\\s*([+-])\\s*(' + alt + ')(?![A-Za-z0-9_])', 'g'), '$1$2.0 $3 $4')
+    }
+  }
+
+  // GLSL 内置 float 函数的实参中不允许裸 int（无隐式转换）：smoothstep 等调用内的整数字面量补 .0
+  code = code.replace(/smoothstep\([^)]*\)/g, (call) => call.replace(/(?<![A-Za-z0-9_.])(\d+)(?![.\d])/g, '$1.0'))
 
   // mul(a, b)：HLSL 行向量语义
   // 收集矩阵类型 uniform/局部变量名
