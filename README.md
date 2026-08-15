@@ -50,3 +50,8 @@ const CONFIG = {
 ## 许可
 
 MIT License —— 详见 [LICENSE](LICENSE)。仓库只包含插件代码，不含任何壁纸视频文件。
+
+## 贡献者
+
+- **网卡小电视** —— 需求、设计与壁纸素材
+- **DeepSeek AI** —— 插件开发与实现
