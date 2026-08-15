@@ -37,8 +37,14 @@ let startTime = 0
 
 document.getElementById('pkg').addEventListener('change', async (ev) => {
   if (!ev.target.files[0]) return
-  pkg = parsePkg(new Uint8Array(await ev.target.files[0].arrayBuffer()))
-  await rebuild()
+  try {
+    status.textContent = '读取文件…'
+    pkg = parsePkg(new Uint8Array(await ev.target.files[0].arrayBuffer()))
+    await rebuild()
+  } catch (e) {
+    status.textContent = '❌ 无法解析该文件：' + (e && e.message) + '（确认拖入的是 scene.pkg）'
+    console.error(e)
+  }
 })
 document.getElementById('proj').addEventListener('change', async (ev) => {
   if (!ev.target.files[0]) return
@@ -48,77 +54,98 @@ document.getElementById('proj').addEventListener('change', async (ev) => {
 
 async function rebuild() {
   if (!pkg) return
-  status.textContent = '解析中…'
-  const sj = JSON.parse(getEntry(pkg, 'scene.json').toString('utf8').replace(/^\uFEFF/, ''))
-  scene = parseScene(sj, project)
-  textures = new Map()
-  const white = { glTex: makeTexture(renderer.gl, new Uint8Array([255, 255, 255, 255]), 1, 1), width: 1, height: 1 }
-  textures.set('util/white', white)
-  textures.set('util/noise', white)
-  let n = 0
-  async function loadTex(name) {
-    if (textures.has(name)) return textures.get(name)
-    const texEntry = getEntry(pkg, 'materials/' + name + '.tex')
-    if (!texEntry) return null
-    const tex = parseTex(texEntry)
-    const m = decodeMip0(tex)
-    const rg88 = tex.format === 8
-    let entry = null
-    if (m.png !== undefined || (m.image !== undefined && m.fif === FIF.JPEG)) {
-      const blob = new Blob([m.png || m.image], { type: m.png ? 'image/png' : 'image/jpeg' })
-      const bmp = await createImageBitmap(blob)
-      entry = { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height, rg88 }
-    } else if (m.image !== undefined) {
-      return null
-    } else {
-      entry = { glTex: makeTexture(renderer.gl, m.rgba, m.width, m.height), width: m.width, height: m.height, rg88 }
-    }
-    textures.set(name, entry)
-    return entry
-  }
-  for (const layer of scene.layers) {
-    if (!layer.image) continue
-    try {
-      const modelEntry = getEntry(pkg, layer.image)
-      if (!modelEntry) continue
-      const model = JSON.parse(modelEntry.toString('utf8').replace(/^\uFEFF/, ''))
-      const mat = resolveMaterial(model)
-      if (!mat) continue
-      const material = JSON.parse(getEntry(pkg, mat.materialPath).toString('utf8').replace(/^\uFEFF/, ''))
-      const pass = material.passes && material.passes[0]
-      const texName = pass && pass.textures && pass.textures[0]
-      if (texName) {
-        if (textures.has(texName)) {
-          layer.textureName = texName
-          n++
-        } else if (await loadTex(texName)) {
-          layer.textureName = texName
-          n++
-        }
+  try {
+    status.textContent = '解析中…'
+    const sceneEntry = getEntry(pkg, 'scene.json')
+    if (!sceneEntry) throw new Error('pkg 里没有 scene.json（这不是场景壁纸文件？）')
+    const sj = JSON.parse(sceneEntry.toString('utf8').replace(/^\uFEFF/, ''))
+    scene = parseScene(sj, project)
+    textures = new Map()
+    const white = { glTex: makeTexture(renderer.gl, new Uint8Array([255, 255, 255, 255]), 1, 1), width: 1, height: 1, rg88: false }
+    textures.set('util/white', white)
+    textures.set('util/noise', white)
+    let n = 0
+    async function loadTex(name) {
+      if (textures.has(name)) return textures.get(name)
+      const texEntry = getEntry(pkg, 'materials/' + name + '.tex')
+      if (!texEntry) return null
+      const tex = parseTex(texEntry)
+      const m = decodeMip0(tex)
+      const rg88 = tex.format === 8
+      let entry = null
+      if (m.video !== undefined) {
+        return null
+      } else if (m.png !== undefined || (m.image !== undefined && m.fif === FIF.JPEG)) {
+        const blob = new Blob([m.png || m.image], { type: m.png ? 'image/png' : 'image/jpeg' })
+        const bmp = await createImageBitmap(blob)
+        entry = { glTex: makeTexture(renderer.gl, null, 0, 0, bmp), width: bmp.width, height: bmp.height, rg88 }
+      } else if (m.image !== undefined) {
+        return null
+      } else {
+        entry = { glTex: makeTexture(renderer.gl, m.rgba, m.width, m.height), width: m.width, height: m.height, rg88 }
       }
-      // 效果引用纹理（shake 流动图 / waterwaves 蒙版）
-      for (const e of layer.effects || []) {
-        for (const p of e.passes || []) {
-          for (const tn of p.textures || []) {
-            if (typeof tn === 'string' && tn !== '' && !tn.startsWith('util/') && !tn.startsWith('_rt_')) {
-              await loadTex(tn)
+      textures.set(name, entry)
+      return entry
+    }
+    for (let li = 0; li < scene.layers.length; li++) {
+      const layer = scene.layers[li]
+      status.textContent = '加载对象 ' + (li + 1) + '/' + scene.layers.length + '：' + (layer.name || '?')
+      if (!layer.image) continue
+      try {
+        const modelEntry = getEntry(pkg, layer.image)
+        if (!modelEntry) continue
+        const model = JSON.parse(modelEntry.toString('utf8').replace(/^\uFEFF/, ''))
+        const mat = resolveMaterial(model)
+        if (!mat) continue
+        const matEntry = getEntry(pkg, mat.materialPath)
+        if (!matEntry) continue
+        const material = JSON.parse(matEntry.toString('utf8').replace(/^\uFEFF/, ''))
+        const pass = material.passes && material.passes[0]
+        const texName = pass && pass.textures && pass.textures[0]
+        if (texName) {
+          if (textures.has(texName)) {
+            layer.textureName = texName
+            n++
+          } else if (await loadTex(texName)) {
+            layer.textureName = texName
+            n++
+          }
+        }
+        // 效果引用纹理（shake 流动图 / waterwaves 蒙版）
+        for (const e of layer.effects || []) {
+          for (const p of e.passes || []) {
+            for (const tn of p.textures || []) {
+              if (typeof tn === 'string' && tn !== '' && !tn.startsWith('util/') && !tn.startsWith('_rt_')) {
+                await loadTex(tn)
+              }
             }
           }
         }
+      } catch (e) {
+        throw new Error('图层 ' + (layer.name || li) + ' 加载失败: ' + (e && e.message))
       }
-    } catch (e) {
-      status.textContent = '加载失败: ' + (e && e.message)
-      return
     }
+    status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（Phase 3：滚动/抖动/波纹）'
+    startTime = performance.now()
+  } catch (e) {
+    status.textContent = '❌ 加载失败：' + (e && e.message) + '（控制台 F12 有详情）'
+    console.error(e)
   }
-  status.textContent = '已加载：' + scene.layers.length + ' 个对象 / ' + n + ' 个纹理（Phase 3：滚动/抖动/波纹）'
-  startTime = performance.now()
 }
 
+let renderErrorShown = false
 function frame(now) {
   if (scene) {
-    const t = (now - startTime) / 1000
-    renderer.render(scene, textures, cv.width, cv.height, t)
+    try {
+      const t = (now - startTime) / 1000
+      renderer.render(scene, textures, cv.width, cv.height, t)
+    } catch (e) {
+      if (!renderErrorShown) {
+        renderErrorShown = true
+        status.textContent = '❌ 渲染失败：' + (e && e.message)
+        console.error(e)
+      }
+    }
   }
   requestAnimationFrame(frame)
 }
