@@ -109,7 +109,16 @@ async function rebuild() {
       const rg88 = tex.format === 8
       let entry = null
       if (m.video !== undefined) {
-        return null
+        // 视频纹理：mp4 字节 → video 元素（渲染器每帧上传当前帧）
+        const blob = new Blob([m.video], { type: 'video/mp4' })
+        const url = URL.createObjectURL(blob)
+        const videoEl = document.createElement('video')
+        videoEl.src = url
+        videoEl.loop = true
+        videoEl.muted = true
+        videoEl.playsInline = true
+        videoEl.play().catch(() => {})
+        entry = { video: videoEl, glTex: makeTexture(renderer.gl, new Uint8Array([0, 0, 0, 0]), 1, 1), width: m.width, height: m.height, rg88: false, lastUploaded: -1 }
       } else if (m.png !== undefined || (m.image !== undefined && m.fif === FIF.JPEG)) {
         const blob = new Blob([m.png || m.image], { type: m.png ? 'image/png' : 'image/jpeg' })
         const bmp = await createImageBitmap(blob)
@@ -117,9 +126,10 @@ async function rebuild() {
       } else if (m.image !== undefined) {
         return null
       } else {
-        // .tex 纹理带 mip 链：全部上传（LINEAR_MIPMAP_LINEAR，与 WE 一致）
-        const mips = decodeMips(tex)
-        entry = { glTex: makeTextureMip(renderer.gl, mips), width: mips[0].width, height: mips[0].height, rg88, mips }
+        // .tex 纹理：只解码基础级上传，mip 链由 generateMipmap 生成
+        // （TEXI 容器可能只存部分 mip 级，不完整链在 WebGL 采样恒黑）
+        const m0 = decodeMip0(tex)
+        entry = { glTex: makeTextureMip(renderer.gl, [m0], rg88), width: m0.width, height: m0.height, rg88, mips: [m0] }
       }
       textures.set(name, entry)
       return entry

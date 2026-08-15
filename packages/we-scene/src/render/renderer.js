@@ -94,7 +94,7 @@ const GL_TYPES = {
 }
 
 export function createRenderer(canvas, opts = {}) {
-  const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, alpha: false })
+  const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, alpha: false, preserveDrawingBuffer: true })
   if (!gl) throw new Error('当前浏览器不支持 WebGL2')
   const shaderResolver = opts.shaderResolver || (async () => null)
 
@@ -224,6 +224,24 @@ export function createRenderer(canvas, opts = {}) {
   const whiteTex = makeTexture(gl, new Uint8Array([255, 255, 255, 255]), 1, 1)
   // 无纹理的非 solid 层（纯效果层/文字对象层）：WE 语义为空层内容透明（白会导致纯白方块）
   const transparentTex = makeTexture(gl, new Uint8Array([0, 0, 0, 0]), 1, 1)
+
+  // ---- 视差（cameraparallax + 对象 parallaxDepth）----
+  const parallaxState = { x: 0, y: 0, sx: 0, sy: 0 }
+  let lastParallaxTime = 0
+  let parallaxAttached = false
+  function attachParallaxListener() {
+    if (parallaxAttached || typeof window === 'undefined' || !window.addEventListener) return
+    parallaxAttached = true
+    window.addEventListener('mousemove', (ev) => {
+      const w = window.innerWidth || 1
+      const h = window.innerHeight || 1
+      parallaxState.x = (ev.clientX / w) * 2 - 1
+      parallaxState.y = (ev.clientY / h) * 2 - 1
+    })
+  }
+  // 层视差缩放（每帧由 renderScene 更新）
+  let layerParallaxScaleX = 0
+  let layerParallaxScaleY = 0
 
   // ---------- uniform 设置 ----------
   function setVal(uni, name, setter) {
@@ -372,6 +390,10 @@ export function createRenderer(canvas, opts = {}) {
     // 旋转：参考实现 y-up 空间 rotate(-angle)，等效 y-down 屏幕 rotate(-angle)（正角度=屏幕逆时针）
     m = mat4RotateZ(m, -layer.angles[2])
     m = mat4Scale(m, w, h, 1)
+    // 对象级视差（parallaxDepth）：近景 depth 正值随鼠标位移放大、远景负值反向
+    if (layer.parallaxDepth && (layerParallaxScaleX !== 0 || layerParallaxScaleY !== 0)) {
+      m = mat4Translate(m, layer.parallaxDepth[0] * layerParallaxScaleX, layer.parallaxDepth[1] * layerParallaxScaleY, 0)
+    }
     const mvp = mat4Multiply(viewProj, m)
     const uni = prog === compProg ? compUni : copyUni
     gl.useProgram(prog)
@@ -400,9 +422,36 @@ export function createRenderer(canvas, opts = {}) {
     }
     gl.clear(gl.COLOR_BUFFER_BIT)
     const cam = buildCamera(scene, width, height)
-    const viewProj = mat4Multiply(cam.projection, cam.view)
+    let viewProj = mat4Multiply(cam.projection, cam.view)
+
+    // ---- 场景级视差（cameraparallax）----
+    const parRaw = general.cameraparallax
+    const parEnabled = parRaw === true || (parRaw !== null && typeof parRaw === 'object' && parRaw.value === true)
+    layerParallaxScaleX = 0
+    layerParallaxScaleY = 0
+    if (parEnabled && opts.parallax !== false) {
+      attachParallaxListener()
+      const amount = typeof general.cameraparallaxamount === 'number' ? general.cameraparallaxamount : 0
+      const influence = typeof general.cameraparallaxmouseinfluence === 'number' ? general.cameraparallaxmouseinfluence : 1
+      const delay = typeof general.cameraparallaxdelay === 'number' ? general.cameraparallaxdelay : 1
+      const parDt = time - lastParallaxTime
+      lastParallaxTime = time
+      const parAlpha = parDt > 0 ? 1 - Math.exp(-parDt / Math.max(0.05, delay)) : 1
+      parallaxState.sx += (parallaxState.x - parallaxState.sx) * parAlpha
+      parallaxState.sy += (parallaxState.y - parallaxState.sy) * parAlpha
+      const strength = amount * influence
+      const parOffX = parallaxState.sx * strength * cam.projW * 0.12
+      const parOffY = parallaxState.sy * strength * cam.projH * 0.12
+      if (parOffX !== 0 || parOffY !== 0) {
+        viewProj = mat4Multiply(mat4Translate(mat4Identity(), parOffX, parOffY, 0), viewProj)
+      }
+      // 对象级视差基准：depth 1.0 的层位移约等于场景级位移
+      layerParallaxScaleX = parallaxState.sx * strength * cam.projW * 0.12
+      layerParallaxScaleY = parallaxState.sy * strength * cam.projH * 0.12
+    }
+
     for (const layer of scene.layers) {
-      if (!layer.visible || layer.particle) continue
+      if (!layer.visible || layer.particle || layer.isContainer) continue
       await renderLayer(layer, textures, cam, viewProj, width, height, time)
     }
     gl.bindVertexArray(null)
@@ -410,7 +459,21 @@ export function createRenderer(canvas, opts = {}) {
 
   async function renderLayer(layer, textures, cam, viewProj, width, height, time) {
     const texObj = !layer.solid && layer.textureName ? textures.get(layer.textureName) : null
-    if (texObj && texObj.video) return
+    // 视频纹理层：把当前视频帧上传到 WebGL（帧时间戳变化才上传）
+    if (texObj && texObj.video) {
+      const v = texObj.video
+      if (v.readyState >= 2 && v.currentTime !== texObj.lastUploaded) {
+        gl.bindTexture(gl.TEXTURE_2D, texObj.glTex)
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v)
+          texObj.width = v.videoWidth || texObj.width
+          texObj.height = v.videoHeight || texObj.height
+          texObj.lastUploaded = v.currentTime
+        } catch (e) {
+          // 视频帧不可用（如跨域/解码中）：保留上一帧
+        }
+      }
+    }
     const srcTex = texObj && texObj.glTex ? texObj.glTex : (layer.solid ? whiteTex : transparentTex)
     const w = Math.max(1, texObj ? texObj.width : 1)
     const h = Math.max(1, texObj ? texObj.height : 1)
@@ -607,26 +670,24 @@ export function makeTextureMip(gl, levels, rg88 = false) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, levels.length - 1)
-  const fmt = rg88 ? gl.RG : gl.RGBA
-  const ifmt = rg88 ? gl.RG8 : gl.RGBA
-  for (let i = 0; i < levels.length; i++) {
-    const lv = levels[i]
-    if (lv.bitmap) {
-      gl.texImage2D(gl.TEXTURE_2D, i, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, lv.bitmap)
-    } else if (rg88 && lv.rgba) {
-      // RGBA 解码（rgb=G, a=R）→ GL_RG 上传（原始 R,G；shader .r=原始R .g=原始G，与参考实现一致）
-      const n = lv.width * lv.height
-      const rg = new Uint8Array(n * 2)
-      for (let p = 0; p < n; p++) {
-        rg[p * 2] = lv.rgba[p * 4 + 3]
-        rg[p * 2 + 1] = lv.rgba[p * 4]
-      }
-      gl.texImage2D(gl.TEXTURE_2D, i, ifmt, lv.width, lv.height, 0, fmt, gl.UNSIGNED_BYTE, rg)
-    } else {
-      gl.texImage2D(gl.TEXTURE_2D, i, ifmt, lv.width, lv.height, 0, fmt, gl.UNSIGNED_BYTE, lv.rgba)
+  // 只上传基础级，其余 mip 用 generateMipmap 生成完整链：
+  // WE 的 TEXI 容器可能只存部分 mip 级（如 5000×3000 仅 5 级），
+  // 不完整的 mip 链在 WebGL 下纹理不完整 → 采样恒黑。
+  const lv = levels[0]
+  if (lv.bitmap) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, lv.bitmap)
+  } else if (rg88 && lv.rgba) {
+    // RGBA 解码（rgb=G, a=R）→ GL_RG 上传（原始 R,G；shader .r=原始R .g=原始G，与参考实现一致）
+    const n = lv.width * lv.height
+    const rg = new Uint8Array(n * 2)
+    for (let p = 0; p < n; p++) {
+      rg[p * 2] = lv.rgba[p * 4 + 3]
+      rg[p * 2 + 1] = lv.rgba[p * 4]
     }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, lv.width, lv.height, 0, gl.RG, gl.UNSIGNED_BYTE, rg)
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, lv.width, lv.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, lv.rgba)
   }
+  gl.generateMipmap(gl.TEXTURE_2D)
   return tex
 }
