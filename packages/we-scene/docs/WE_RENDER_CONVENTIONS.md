@@ -148,7 +148,7 @@ BLENDMODE==0: out.a = 1
 **combo 语义**：`BLENDMODE` 的 "default":30 只是 WE 编辑器 UI 默认值；
 scene.json 的 pass 里没有 combos.BLENDMODE 时，shader 的 `#if` 链全部不成立，
 走 ApplyBlending 的 fallthrough = **Normal（普通 lerp）**。本渲染器用 -1 表示"未定义→Normal"。
-Reze 场景（2423807815）的 tint pass 均无 combos → Normal。
+参考场景（文件夹 2423807815）的 tint pass 均无 combos → Normal。
 
 ### 5.7 pulse（pulse.frag:35-63，无音频路径）
 ```
@@ -163,7 +163,7 @@ out = vec4(max(0, rgb), a)
 **combo 语义**：`PULSECOLOR` 声明 default:1、`PULSEALPHA` default:0、`BLENDMODE` default:9
 都只是编辑器 UI 默认；scene.json 的 pass 没有对应 combos 时 shader `#if` 不成立：
 PULSECOLOR/PULSEALPHA 关闭（pulse 整体 no-op），BLENDMODE 走 fallthrough Normal。
-Reze 场景（2423807815）的 pulse pass 只有 BLENDMODE:22，无 PULSECOLOR → **pulse 为 no-op**。
+参考场景（文件夹 2423807815）的 pulse pass 只有 BLENDMODE:22，无 PULSECOLOR → **pulse 为 no-op**。
 音频路径（AUDIOPROCESSING）在无音频的渲染器里跳过（WE 无音频时 pulse=0）。
 
 ### 5.8 colorkey（colorkey.frag:14-30）
