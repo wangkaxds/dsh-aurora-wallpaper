@@ -19,6 +19,8 @@
 
 ## 快速开始
 
+> 📖 **第一次使用？请先看保姆级教程：[docs/INSTALL.zh.md](docs/INSTALL.zh.md)**（含装载、验收、调参、排错、卸载全流程）。
+
 1. 打开 DeepSeek Harness，进入 cordis 插件面板；
 2. 把 `src/host.js` 与 `src/client.js` 分别作为宿主半和客户端半定义（或参照你习惯的插件装载方式）；
 3. 修改 `src/host.js` 顶部的配置：
