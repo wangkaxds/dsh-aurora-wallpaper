@@ -1,0 +1,12 @@
+{
+  "name": "we-scene",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Wallpaper Engine scene.pkg browser parser & renderer (Route C)",
+  "license": "MIT",
+  "scripts": {
+    "probe": "node cli/probe.mjs",
+    "extract": "node cli/extract.mjs"
+  }
+}
