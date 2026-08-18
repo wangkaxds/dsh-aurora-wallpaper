@@ -97,6 +97,8 @@ export function createRenderer(canvas, opts = {}) {
   const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, alpha: false, preserveDrawingBuffer: true })
   if (!gl) throw new Error('当前浏览器不支持 WebGL2')
   const shaderResolver = opts.shaderResolver || (async () => null)
+  // FBO 分辨率限幅系数：0 = 关闭（全质量）；>0 时效果链 FBO 上限 = 屏幕占比 × 系数
+  let fboCapFactor = opts.fboCapFactor === undefined ? 0 : opts.fboCapFactor
 
   const copyProg = linkProgram(gl, COPY_VERT, COPY_FRAG)
   const compProg = linkProgram(gl, COPY_VERT, COMPOSITE_FRAG)
@@ -480,6 +482,20 @@ export function createRenderer(canvas, opts = {}) {
     const color4 = [layer.color[0] * layer.brightness, layer.color[1] * layer.brightness, layer.color[2] * layer.brightness, layer.alpha]
     const effects = (layer.effects || []).filter((e) => e.visible)
 
+    // 效果降采样（性能档位）：fboCapFactor > 0 时效果链 FBO 上限 = 屏幕占比 × 系数（0=全质量）
+    let fboW = w
+    let fboH = h
+    if (fboCapFactor > 0 && cam.projW > 0 && cam.projH > 0) {
+      const screenW = layer.size[0] * layer.scale[0] * (width / cam.projW)
+      const screenH = layer.size[1] * layer.scale[1] * (height / cam.projH)
+      if (screenW > 0 && screenH > 0) {
+        const capW = Math.max(64, Math.round(screenW * fboCapFactor))
+        const capH = Math.max(64, Math.round(screenH * fboCapFactor))
+        if (capW < w) fboW = capW
+        if (capH < h) fboH = capH
+      }
+    }
+
     // 无效果：直接合成
     if (effects.length === 0) {
       compositeLayer(copyProg, srcTex, color4, layer, cam, viewProj, width, height)
@@ -487,15 +503,15 @@ export function createRenderer(canvas, opts = {}) {
     }
 
     // copy pass → FBO A（乒乓 A/B 必须独立实例）
-    const fboA = getFBO(w, h, 'ping')
-    const fboB = getFBO(w, h, 'pong')
-    const layerOrtho = mat4Ortho(0, w, 0, h, -10000, 10000)
+    const fboA = getFBO(fboW, fboH, 'ping')
+    const fboB = getFBO(fboW, fboH, 'pong')
+    const layerOrtho = mat4Ortho(0, fboW, 0, fboH, -10000, 10000)
     gl.useProgram(copyProg)
     setBlend('normal')
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboA.fbo)
-    gl.viewport(0, 0, w, h)
+    gl.viewport(0, 0, fboW, fboH)
     gl.bindVertexArray(vao)
-    uploadQuad('layer' + w + 'x' + h, layerQuad(w, h))
+    uploadQuad('layer' + fboW + 'x' + fboH, layerQuad(fboW, fboH))
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, srcTex)
     gl.uniform1i(copyUni.tex, 0)
@@ -514,7 +530,7 @@ export function createRenderer(canvas, opts = {}) {
       for (const f of eff.fbos || []) {
         if (!effectFBOs.has(f.name)) {
           const scale = f.scale || 1
-          effectFBOs.set(f.name, getFBO(Math.max(1, Math.round(w / scale)), Math.max(1, Math.round(h / scale)), f.name))
+          effectFBOs.set(f.name, getFBO(Math.max(1, Math.round(fboW / scale)), Math.max(1, Math.round(fboH / scale)), f.name))
         }
       }
       const passes = eff.materialPasses || []
@@ -614,6 +630,10 @@ export function createRenderer(canvas, opts = {}) {
       progCache.clear()
       includeCache.clear()
       if (shaderSrcCache) shaderSrcCache.clear()
+    },
+    // 运行时切换效果降采样系数（性能档位：0=全质量，1=效果链 ≤ 屏幕尺寸）
+    setFboCapFactor: function (v) {
+      fboCapFactor = v
     },
   }
 }

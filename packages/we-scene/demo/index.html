@@ -40,7 +40,11 @@ function shaderResolver(rel) {
     .then((r) => (r.ok ? r.text() : null))
     .catch(() => null)
 }
-const renderer = createRenderer(cv, { shaderResolver })
+const renderer = createRenderer(cv, {
+  shaderResolver,
+  // 效果降采样：?fboCap=N 时效果链 FBO 上限 = 屏幕占比 × N（0=关闭/全质量）
+  fboCapFactor: parseFloat(new URLSearchParams(location.search).get('fboCap') || '0') || 0,
+})
 const utf8 = new TextDecoder()
 function readText(bytes) {
   return utf8.decode(bytes).replace(/^\uFEFF/, '')
@@ -221,14 +225,23 @@ let lastCenterPx = null // 渲染后读回的画面中心像素（检测画面�
     })
   }
 }
+// 性能开关：?maxfps=N 帧率上限（0=不限）；页面不可见时暂停渲染
+const maxFps = parseFloat(new URLSearchParams(location.search).get('maxfps') || '0') || 0
+const minGap = maxFps > 0 ? 1000 / maxFps : 0
+let lastRenderAt = 0
 function frame(now) {
   // 录制工具冻结开关：__weFreeze=true 时 RAF 不渲染（录制脚本自行控制帧）
-  if (scene && !window.__weFreeze) {
+  if (scene && !window.__weFreeze && document.visibilityState !== 'hidden') {
+    if (minGap > 0 && now - lastRenderAt < minGap) {
+      requestAnimationFrame(frame)
+      return
+    }
     const t = (now - startTime) / 1000
     // 忙碌保护：上一帧未完成则跳过本帧（丢帧而非堆积，防止卡顿螺旋）
     if (!renderBusy) {
       renderBusy = true
       renderBusyAt = now
+      lastRenderAt = now
       renderer.render(scene, textures, cv.width, cv.height, t).then(() => {
         lastFrameMs = performance.now() - now
         lastT = t
