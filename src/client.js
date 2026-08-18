@@ -1,13 +1,12 @@
 // DSH Aurora Wallpaper —— 客户端半
-// 职责：注册「动态壁纸·暗 / 亮」两套主题、注入玻璃纱罩与渐暗样式、
-//       在「设置 → 壁纸背景」注册管理面板（主题四档、壁纸列表、同步扫描、文件夹选择）。
+// 职责：注册主题（token 覆盖）与设置页 UI（壁纸列表/主题/性能档位/扫描）。
+// 性能档位：均衡 60fps / 省电 30fps / 低配 30fps+降采样，失焦暂停开关（localStorage 'aurora-perf'，宿主半读取生效）。
 
-export default {
+return {
   apply(ctx) {
     const theme = ctx.get('theme')
     const slots = ctx.get('slots')
     if (theme === undefined || slots === undefined) return
-
     const disposeDark = theme.register({
       id: 'aurora-dark',
       colorScheme: 'dark',
@@ -24,7 +23,6 @@ export default {
         '--dsw-alias-button-ghost-active-fill': 'rgba(34, 34, 40, 0.55)',
       },
     })
-
     const disposeLight = theme.register({
       id: 'aurora-light',
       colorScheme: 'light',
@@ -41,9 +39,7 @@ export default {
         '--dsw-alias-button-ghost-active-fill': 'rgba(24, 24, 28, 0.08)',
       },
     })
-
     theme.setTheme('aurora-dark')
-
     const disposeStyles = styles.insert(`
 html { background: #DCD9D2; }
 html:has(body[data-ds-dark-theme]) { background: #0E0E10; }
@@ -110,19 +106,16 @@ body[data-ds-dark-theme]::after {
   body::before { animation: none; }
 }
 `)
-
     const disposeSection = slots.inject('settings.section', () => slots.register(
       { name: 'settings.section', id: 'wallpaper', order: 30, label: '壁纸背景' },
       (props) => React.createElement(WallpaperSection, { close: props.close }),
     ))
-
     ctx.effect(() => () => {
       disposeSection()
       disposeStyles()
       disposeLight()
       disposeDark()
     })
-
     function WallpaperSection(props) {
       const [list, setList] = React.useState(null)
       const [index, setIndex] = React.useState(0)
@@ -130,13 +123,15 @@ body[data-ds-dark-theme]::after {
       const [busy, setBusy] = React.useState(false)
       const [err, setErr] = React.useState('')
       const [pref, setPref] = React.useState('')
+      const [perfMode, setPerfMode] = React.useState('balanced')
+      const [pauseOnBlur, setPauseOnBlur] = React.useState(true)
       const THEMES = [
         { id: 'aurora-dark', label: '动态壁纸·暗' },
         { id: 'aurora-light', label: '动态壁纸·亮' },
         { id: 'dark', label: '内置暗色' },
         { id: 'light', label: '内置亮色' },
       ]
-
+      const PERF_LABELS = { balanced: '均衡 · 60fps', powersave: '省电 · 30fps', lowend: '低配 · 30fps+降采样' }
       React.useEffect(() => {
         let alive = true
         host.call('aurora-list', {}).then((r) => {
@@ -146,22 +141,24 @@ body[data-ds-dark-theme]::after {
         }).catch(() => { if (alive) setErr('读取壁纸列表失败') })
         const snap = theme.getTheme()
         if (snap && snap.preference) setPref(snap.preference)
+        try {
+          const p = JSON.parse(localStorage.getItem('aurora-perf') || '{}')
+          if (p.mode) setPerfMode(p.mode)
+          if (p.pauseOnBlur !== undefined) setPauseOnBlur(p.pauseOnBlur)
+        } catch (e) {}
         return () => { alive = false }
       }, [])
-
       const refreshList = () => {
         host.call('aurora-list', {}).then((r) => {
           setList(r.videos || [])
           setIndex(r.index || 0)
         }).catch(() => setErr('刷新列表失败'))
       }
-
       const switchTheme = (id) => {
         theme.setTheme(id)
         const snap = theme.getTheme()
         setPref(snap.preference)
       }
-
       const go = (n) => {
         setBusy(true)
         host.call('aurora-set', { index: n }).then((r) => {
@@ -169,17 +166,15 @@ body[data-ds-dark-theme]::after {
           setBusy(false)
         }).catch(() => { setErr('切换失败'); setBusy(false) })
       }
-
       const doScan = (path) => {
         setBusy(true)
         setScan(null)
-        host.call('aurora-scan', path ? { path } : {}).then((r) => {
+        host.call('aurora-scan', path ? { path: path } : {}).then((r) => {
           setScan(r)
           setBusy(false)
           refreshList()
         }).catch(() => { setErr('扫描失败'); setBusy(false) })
       }
-
       const pickFolder = () => {
         const ws = ctx.get('workspaces')
         if (ws === undefined) { setErr('此环境不支持文件夹选择'); return }
@@ -187,7 +182,11 @@ body[data-ds-dark-theme]::after {
           if (p) doScan(p)
         }).catch(() => { setErr('无法打开文件夹选择器') })
       }
-
+      const setPerf = (mode, pause) => {
+        localStorage.setItem('aurora-perf', JSON.stringify({ mode: mode, pauseOnBlur: pause }))
+        setPerfMode(mode)
+        setPauseOnBlur(pause)
+      }
       const total = list ? list.length : 0
       const cur = list && list[index] ? list[index] : null
       return React.createElement('div', { className: 'aurora-panel' }, [
@@ -199,6 +198,21 @@ body[data-ds-dark-theme]::after {
           'data-active': String(pref === th.id),
           onClick: () => switchTheme(th.id),
         }, th.label))),
+        React.createElement('div', { key: 'pt', className: 'aurora-sub' }, '性能（场景壁纸渲染档位，不影响画质）：'),
+        React.createElement('div', { key: 'pa', className: 'aurora-actions' }, Object.keys(PERF_LABELS).map((m) => React.createElement('button', {
+          key: m,
+          className: 'aurora-btn',
+          'data-active': String(perfMode === m),
+          onClick: () => setPerf(m, pauseOnBlur),
+        }, PERF_LABELS[m]))),
+        React.createElement('div', { key: 'pb', className: 'aurora-actions' }, [
+          React.createElement('button', {
+            key: 'pause',
+            className: 'aurora-btn',
+            'data-active': String(pauseOnBlur),
+            onClick: () => setPerf(perfMode, !pauseOnBlur),
+          }, '失焦暂停：' + (pauseOnBlur ? '开' : '关')),
+        ]),
         React.createElement('div', { key: 'c', className: 'aurora-sub' }, cur ? ('当前：' + cur.title + '（' + (index + 1) + '/' + total + '）') : (list && list.length === 0 ? '未在壁纸引擎目录中发现壁纸。' : '加载中…')),
         React.createElement('div', { key: 'a', className: 'aurora-actions' }, [
           React.createElement('button', { key: 'p', className: 'aurora-btn', disabled: busy || !list || list.length === 0, onClick: () => go(index - 1) }, '上一张'),
